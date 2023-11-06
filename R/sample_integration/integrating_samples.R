@@ -393,10 +393,10 @@ integration.anchors <- FindIntegrationAnchors(
   object.list = atac.objs,
   anchor.features = rownames(atac.objs[[1]]),
   reduction = "rlsi",
-  dims = 2:50,
-  k.anchor = 2,
-  k.filter = 5,
-  k.score = 30
+  dims = 2:50
+  # k.anchor = 2,
+  # k.filter = 5,
+  # k.score = 30
 )
 
 print('Integrating embeddings...')
@@ -404,8 +404,8 @@ integrated <- IntegrateEmbeddings(
   anchorset = integration.anchors,
   reductions = atac.combined[["lsi"]],
   new.reduction.name = "integrated_lsi",
-  dims.to.integrate = 1:50,
-  k.weight = 30
+  dims.to.integrate = 1:50
+  # k.weight = 30
 )
 
 print('Running UMAP...')
