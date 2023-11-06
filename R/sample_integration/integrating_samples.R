@@ -411,9 +411,9 @@ integrated <- IntegrateEmbeddings(
 )
 
 print('Running UMAP...')
-integrated <- RunUMAP(integrated, reduction = "integrated_lsi", dims = 2:50, return.model = TRUE)
+integrated <- RunUMAP(integrated, reduction = "integrated_lsi", dims = 2:50, return.model = TRUE, seed.use = 1)
 integrated <- FindNeighbors(object = integrated, reduction = 'integrated_lsi', dims = 2:50)
-integrated <- FindClusters(object = integrated, verbose = FALSE, algorithm = 3, resolution = 1.5)
+integrated <- FindClusters(object = integrated, verbose = FALSE, algorithm = 3, resolution = 1.5, random.seed = 1)
 
 
 ################################ Adding cell types via bridge integration ##########################
