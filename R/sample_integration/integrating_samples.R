@@ -9,6 +9,8 @@ library(EnsDb.Hsapiens.v86)
 library(BSgenome.Hsapiens.UCSC.hg38)
 library(tidyverse)
 library(dsb)
+library(JASPAR2020)
+library(TFBSTools)
 library(parallel)
 set.seed(1234)
 
@@ -581,8 +583,38 @@ integrated$Genotype <- integrated$genotype_pred_manual
 integrated$Genotype[is.na(integrated$Genotype)] <- "NA"
 integrated$Genotype <- factor(integrated$Genotype, levels = c("WT", "MUT", "NA"))
 
+################################### Run ChromVar for all clusters ####################################
+
+## Get a list of motif position frequency matrices from JASPAR database
+pfm <- getMatrixSet(
+  x = JASPAR2020,
+  opts = list(collection = "CORE", tax_group = 'vertebrates', species = "Homo sapiens", all_versions = FALSE)
+)
+
+# add motif information
+DefaultAssay(integrated) <- "ATAC"
+integrated <- AddMotifs(object = integrated, genome = BSgenome.Hsapiens.UCSC.hg38, assay = "ATAC", pfm = pfm)
+
+# Compute a per-cell motif activity score
+DefaultAssay(integrated) <- "ATAC"
+integrated <- RunChromVAR(
+  object = integrated,
+  assay = "ATAC",
+  genome = BSgenome.Hsapiens.UCSC.hg38
+)
+
+## Name to ID matrix
+id.to.name <- data.frame()
+for (item.name in names(pfm)) {
+  print(item.name)
+  id.to.name <- rbind(id.to.name, data.frame(ID = pfm[[item.name]]@ID, name = pfm[[item.name]]@name))
+}
+
+## Replace chromvar assay ID rownames with gene names
+rownames(integrated@assays$chromvar@data) <- plyr::mapvalues(rownames(integrated@assays$chromvar@data), from = id.to.name$ID, to = id.to.name$name)
+
 
 #################################### Save! #######################################
 
 
-saveRDS(integrated, file = "data/seurat_objects/vexas_ATAC_final_20231103_v2.RDS")
+saveRDS(integrated, file = "data/seurat_objects/vexas_ATAC_final.RDS")
