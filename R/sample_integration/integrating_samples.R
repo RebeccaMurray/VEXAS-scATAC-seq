@@ -12,7 +12,10 @@ library(dsb)
 library(JASPAR2020)
 library(TFBSTools)
 library(parallel)
+library(tximport)
+library(Biostrings)
 set.seed(1234)
+theme_set(theme_bw())
 
 ## Define input/output paths
 plots_path = "/gpfs/commons/home/rmurray/rscripts/VEXAS_GoTChA_signac/output/integrated_plots/"
@@ -52,7 +55,7 @@ sample.list <- list(
 # # Very minimal QC filtering for peaks
 # filter_bad_peaks <- function(combined.peaks.obj) {
 #   peakwidths <- width(combined.peaks.obj)
-#   combined.peaks.obj <- combined.peaks.obj[peakwidths < 10000 & peakwidths > 20]
+#   combined.peaks.obj <- combined.peaks.obj[peakwidths < 15000 & peakwidths > 20]
 #   return(combined.peaks.obj)
 # }
 # 
@@ -177,13 +180,9 @@ plist <- lapply(atac.objs, function(x) {
   
 })
 p.combined <- wrap_plots(plist, ncol = 3)
-ggsave(filename = "figures/current_figure_drafts/pre_filter_QC_metrics.pdf", plot = p.combined)
+ggsave(filename = "figures/current_figure_drafts/pre_filter_QC_heatmaps.pdf", plot = p.combined)
 
-# ## Print QC violin plots
-# plist <- lapply(atac.objs, function(x) {
-#   p.violin <- VlnPlot(x, features = c("blacklist_ratio", "nucleosome_signal", "pct_reads_in_peaks"), group.by = "orig.ident", pt.size = 0, ncol = 3)
-#   ggsave(filename = paste0("figures/current_figure_drafts/qc_violins/pre_filter_QC_violins_", x@project.name, ".pdf"), plot = p.violin, width = 7, height = 4)
-# })
+
 ## Print QC violin plots
 plist <- lapply(atac.objs, function(x) {
   md <- x@meta.data
@@ -197,18 +196,21 @@ plist <- lapply(atac.objs, function(x) {
     ggplot(aes(x = "Sample", y = blacklist_ratio)) +
     geom_violin(fill = "salmon") + xlab(element_blank()) + ggtitle("Blacklist ratio") 
   p.combined <- (p1 | p2 | p3) + plot_annotation(title = x@project.name)
-  ggsave(filename = paste0("figures/current_figure_drafts/qc_violins/pre_filter_QC_violins_", x@project.name, ".pdf"), plot = p.combined, width = 7.5, height = 4)
+  return(patchwork::wrap_elements(p.combined))
 })
+ggsave(filename = paste0("figures/current_figure_drafts/pre_filter_QC_violins.pdf"), plot = p.combined, width = 15, height = 15)
+
+
 
 
 ## CD34+
 if (exists("SG_VX18_ATAC", atac.objs)) { ## checked
   atac.objs$`SG_VX18_ATAC` <- subset(
     atac.objs$`SG_VX18_ATAC`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 500 &
       nCount_ATAC < 10**3.75 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05 
   )
@@ -217,10 +219,10 @@ if (exists("SG_VX18_ATAC", atac.objs)) { ## checked
 if (exists("SG_VX17_ATAC", atac.objs)) { ## checked
   atac.objs$`SG_VX17_ATAC` <- subset(
     atac.objs$`SG_VX17_ATAC`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 500 &
       nCount_ATAC < 10**3.75 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05 
   )
@@ -229,10 +231,10 @@ if (exists("SG_VX17_ATAC", atac.objs)) { ## checked
 if (exists("SG_VX16_ATAC", atac.objs)) { ## checked
   atac.objs$`SG_VX16_ATAC` <- subset(
     atac.objs$`SG_VX16_ATAC`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 500 &
       nCount_ATAC < 10**3.75 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05 
   )
@@ -242,7 +244,7 @@ if (exists("SG_VX16_ATAC", atac.objs)) { ## checked
 if (exists("VEX_BM11_LIN_NEG_ATAC", atac.objs)) { ## checked
   atac.objs$`VEX_BM11_LIN_NEG_ATAC` <- subset(
     atac.objs$`VEX_BM11_LIN_NEG_ATAC`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 500 &
       nCount_ATAC < 10**3.75 &
       TSS.enrichment > 2.5 &
       pct_reads_in_peaks > 15 &
@@ -257,7 +259,7 @@ if (exists("VEX_BM10_POS_ATAC", atac.objs)) { ## Checked
     subset = nCount_ATAC > 1000 &
       nCount_ATAC < 10**4.75 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05 
   )
@@ -266,10 +268,10 @@ if (exists("VEX_BM10_POS_ATAC", atac.objs)) { ## Checked
 if (exists("VEX_BM8_POS_ATAC", atac.objs)) { ## Checked
   atac.objs$`VEX_BM8_POS_ATAC` <- subset(
     atac.objs$`VEX_BM8_POS_ATAC`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 500 &
       nCount_ATAC < 10**4.25 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05
   )
@@ -278,10 +280,10 @@ if (exists("VEX_BM8_POS_ATAC", atac.objs)) { ## Checked
 if (exists("BM7_LLL_CD34_plus", atac.objs)) { ## Checked
   atac.objs$`BM7_LLL_CD34_plus` <- subset(
     atac.objs$`BM7_LLL_CD34_plus`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 500 &
       nCount_ATAC < 10**4.5 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05
   )
@@ -290,10 +292,10 @@ if (exists("BM7_LLL_CD34_plus", atac.objs)) { ## Checked
 if (exists("BM6_LLL_CD34_plus", atac.objs)) { ## checked
   atac.objs$`BM6_LLL_CD34_plus` <- subset(
     atac.objs$`BM6_LLL_CD34_plus`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 500 &
       nCount_ATAC < 10**4.25 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05
   )
@@ -302,10 +304,10 @@ if (exists("BM6_LLL_CD34_plus", atac.objs)) { ## checked
 if (exists("BM5_LLL_CD34_plus", atac.objs)) { ## checked
   atac.objs$`BM5_LLL_CD34_plus` <- subset(
     atac.objs$`BM5_LLL_CD34_plus`,
-    subset = nCount_ATAC > 1000 &
+    subset = nCount_ATAC > 1500 &
       nCount_ATAC < 30000 &
       TSS.enrichment > 2.5 &
-      pct_reads_in_peaks > 40 &
+      pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
       blacklist_ratio < 0.05
   )
@@ -324,7 +326,7 @@ plist <- lapply(atac.objs, function(x) {
   
 })
 p.combined <- wrap_plots(plist, ncol = 3)
-ggsave(filename = "figures/current_figure_drafts/post_filter_QC_metrics.pdf", plot = p.combined)
+ggsave(filename = "figures/current_figure_drafts/post_filter_QC_heatmaps.pdf", plot = p.combined)
 
 ## Print QC violin plots
 plist <- lapply(atac.objs, function(x) {
@@ -339,8 +341,9 @@ plist <- lapply(atac.objs, function(x) {
     ggplot(aes(x = "Sample", y = blacklist_ratio)) +
     geom_violin(fill = "salmon") + xlab(element_blank()) + ggtitle("Blacklist ratio") 
   p.combined <- (p1 | p2 | p3) + plot_annotation(title = x@project.name)
-  ggsave(filename = paste0("figures/current_figure_drafts/qc_violins/post_filter_QC_violins_", x@project.name, ".pdf"), plot = p.combined, width = 7.5, height = 4)
+  return(patchwork::wrap_elements(p.combined))
 })
+ggsave(filename = paste0("figures/current_figure_drafts/post_filter_QC_violins.pdf"), plot = p.combined, width = 15, height = 15)
 
 
 
@@ -583,6 +586,55 @@ integrated$Genotype <- integrated$genotype_pred_manual
 integrated$Genotype[is.na(integrated$Genotype)] <- "NA"
 integrated$Genotype <- factor(integrated$Genotype, levels = c("WT", "MUT", "NA"))
 
+################################# Adding TSB (phospho-seq) data #####################################
+
+phospho.seq.samples <- c(
+  "SG_VX16_ATAC",
+  "SG_VX17_ATAC",
+  "SG_VX18_ATAC"
+)
+
+tsb.dfs <- lapply(phospho.seq.samples, function(sample.name) {
+  adt.files <- file.path(paste0("/gpfs/commons/groups/landau_lab/VEXAS/ADT_quantification/Phospho_Seq/antibodies_phospho_seq/", sample.name, "/TSB_alevin/alevin_output/alevin/quants_mat.gz"))
+  adt.names <- read_tsv(paste0("/gpfs/commons/groups/landau_lab/VEXAS/ADT_quantification/Phospho_Seq/antibodies_phospho_seq/", sample.name, "/TSB_alevin/features_TSB_ID_first.tsv"), col_names = c("feature", "barcode"))
+  
+  ## Load Alevin outputs
+  adt.txi <- tximport(files = adt.files, type = "alevin")$counts
+  rownames(adt.txi) <- plyr::mapvalues(rownames(adt.txi), from = adt.names$barcode, to = adt.names$feature)
+  reverse.complemented.barcodes <- lapply(colnames(adt.txi), function(x) {
+    dna.string <- DNAString(x)
+    rev.comp <- reverseComplement(dna.string)
+    return(toString(rev.comp))
+  })
+  colnames(adt.txi) <- paste0(sample.name, "_", reverse.complemented.barcodes, "-1")
+  return(adt.txi)
+})
+
+## Add to object
+tsb.df <- do.call(cbind, tsb.dfs)
+barcode.list <- intersect(colnames(tsb.df), integrated@meta.data %>% rownames())
+tsb.df.formatted <- tsb.df[, barcode.list]
+integrated[["ADT_TSB"]] <- CreateAssayObject(counts = tsb.df.formatted)
+
+## Normalize with CLR
+integrated <- NormalizeData(integrated, normalization.method = "CLR", margin = 2, assay = "ADT_TSB")
+
+################################# Call peaks separately for each cluster ############################
+
+## Recall peaks using macs2 - run this using gotcha_signac_env_3_17_23
+DefaultAssay(integrated) <- "ATAC"
+macs2.peaks <- CallPeaks(integrated, 
+                         group_by = "seurat_clusters",
+                         outdir = "~/rscripts/VEXAS_ATAC_signac/data", 
+                         fragment.tempdir = "~/rscripts/VEXAS_ATAC_signac/data", 
+                         macs2.path = "/nfs/sw/macs2/macs2-2.2.7.1/python/bin/macs2")
+macs2.counts <- FeatureMatrix(fragments = Fragments(integrated), features = macs2.peaks, cells = colnames(integrated))
+annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+genome(annotations) <- "hg38"
+integrated[["macs2_peaks"]] <- CreateChromatinAssay(counts = macs2.counts, annotation = annotations)
+
+
 ################################### Run ChromVar for all clusters ####################################
 
 ## Get a list of motif position frequency matrices from JASPAR database
@@ -617,4 +669,4 @@ rownames(integrated@assays$chromvar@data) <- plyr::mapvalues(rownames(integrated
 #################################### Save! #######################################
 
 
-saveRDS(integrated, file = "data/seurat_objects/vexas_ATAC_final.RDS")
+saveRDS(integrated, file = "data/seurat_objects/vexas_ATAC_final_custom_limits.RDS")
