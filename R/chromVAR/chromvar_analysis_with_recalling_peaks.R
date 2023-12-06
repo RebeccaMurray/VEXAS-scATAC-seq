@@ -73,68 +73,97 @@ rownames(atac.obj.subset@assays$chromvar_HSC@data) <- plyr::mapvalues(rownames(a
 
 #################### Save updated ATAC obj ####################
 
-saveRDS(atac.obj.subset, file = paste0("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_", cluster, "_chromvar_20231205.rds"))
-# atac.obj.subset <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/atac_obj_cluster_celltype_HSC_chromvar_08_04_23.rds")
-# 
-# #################### Load expressed TFs ####################
-# 
-# expressed.genes <- read_csv(paste0("~/rscripts/VEXAS_RNA_seurat/data/expressed_gene_lists/genes_expressed_5_cells_", cluster, ".csv")) %>% pull(feature)
-# tf.list <- rownames(atac.obj.subset@assays$chromvar@data)
-# names(tf.list) <- tf.list
-# 
-# decide_if_keep_tf <- function(tf) {
-#   tf <- tf
-#   tf <- gsub("\\(.*\\)", "", tf)
-#   tf.list <- strsplit(tf, "::") %>% unlist()
-#   for (tf.current in tf.list) {
-#     if(tf.current %in% expressed.genes) {
-#       return(TRUE)
-#     }
-#   }
-#   print(paste0("Excluding TF: ", tf))
-#   return(FALSE)
-# }
-# 
-# tf.list.annotated <- lapply(tf.list, function(tf) {decide_if_keep_tf(tf)})
-# tf.list.filtered <- tf.list.annotated[tf.list.annotated == T] %>% names(.)
-# 
-# 
-# ############### Using LMM - compare all MUT and WT cells ####################
-# 
-# # For use with Gotcha helper function included in package
-# # atac.obj.subset.donor <- subset(atac.obj.subset, orig.ident %in% c("SG_VX16_ATAC", "VEX_BM10_POS_ATAC", "VEX_BM8_POS_ATAC") & predicted.l2 == "HSC" & predicted.l2.score > 0.3)
-# atac.obj.subset.donor <- subset(atac.obj.subset, orig.ident %in% c("VEX_BM8_POS_ATAC", "VEX_BM10_POS_ATAC", "SG_VX16_ATAC", "SG_VX17_ATAC", "SG_VX18_ATAC"))
-# atac.obj.subset.donor$clustering_col <- "Constant"
-# print(table(atac.obj.subset.donor$Sample))
-# 
-# # ## Randomly downsample to 50 MUT/WT cells per sample
-# # downsampled.bcs <- atac.obj.subset.donor@meta.data %>%
-# #   rownames_to_column("barcode") %>%
-# #   filter(Genotype != "NA") %>%
-# #   group_by(orig.ident, Genotype) %>%
-# #   slice_sample(n=35) %>%
-# #   pull(barcode)
-# # atac.obj.subset.donor@meta.data[downsampled.bcs, ] %>% group_by(orig.ident, genotype_pred_manual) %>% count()
-# #
-# # atac.obj.subset.donor <- subset(atac.obj.subset.donor, cells = downsampled.bcs)
-# 
-# da_motifs.all.cells.genotyped.lmm <- DiffLMMPseudocount(metadata = atac.obj.subset.donor@meta.data,
-#                                                  provided.matrix = atac.obj.subset.donor@assays$chromvar@data[tf.list.filtered, ],
-#                                                  sample.column = "orig.ident",
-#                                                  cluster.column = "clustering_col",
-#                                                  selected.clusters = "Constant",
-#                                                  treatment.column = "genotype_pred_manual",
-#                                                  treatment.levels = c("WT","MUT"),
-#                                                  ncores = 18)
-# 
-# print("Saving...")
-# da_motifs.all.cells.genotyped.lmm %>%
-#   write_csv(file = "data/chromVAR/HSC_chromvar_analysis_with_lmm_expressed_5_cells.csv")
-# 
-# print("Done!")
-# 
-# # ## For later - load result
-# da_motifs.all.cells.genotyped.lmm <- read_csv("data/chromVAR/JASPAR2020/HSC_chromvar_analysis_with_lmm_expressed_5_cells.csv")
-# 
-# da_motifs.all.cells.genotyped.lmm %>%
-#   plot_volcano(., metadata.df = atac.obj.subset@meta.data, effect_column = "delta", stat_column = "pval", effect_line = 0.2, stat_line = 0.05)
+# saveRDS(atac.obj.subset, file = paste0("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_", cluster, "_chromvar_20231205.rds"))
+atac.obj.subset <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_HSC_chromvar_20231205.rds")
+
+
+#################### Keep only expressed TFs ####################
+
+# Helper function to filter for minimum expression - RNA assay version
+FilterGenes <-
+  function (object, min.value=1, min.cells = 0, genes = NULL) {
+    parameters.to.store <- as.list(environment(), all = TRUE)[names(formals("FilterGenes"))]
+    # object <- Seurat:::SetCalcParams(object = object, calculation = "FilterGenes", ... = parameters.to.store)
+    genes.use <- rownames(object@assays$RNA@data)
+    
+    if (!is.null(genes)) {
+      genes.use <- intersect(genes.use, genes)
+      object@data <- object@assays$RNA@data[genes.use, ]
+      return(object)
+    } else if (min.cells > 0) {
+      num.cells <- Matrix::rowSums(object@assays$RNA@data > min.value)
+      genes.use <- names(num.cells[which(num.cells >= min.cells)])
+      # object@assays$RNA@data <- object@assays$RNA@data[genes.use, ] # original way of subsetting
+      
+      ## modified way of subsetting, removing from entire obj
+      counts <- GetAssayData(object, assay = "RNA")
+      counts <- counts[(which(rownames(counts) %in% genes.use)),]
+      object <- subset(object, features = rownames(counts))
+      return(object)
+    } else {
+      return(object)
+    }
+  }
+
+## Load the VEXAS RNA object, only keep genes expressed in any cells of that cell type
+rna.obj <- readRDS("~/rscripts/VEXAS_RNA_seurat/data/seurat_objects/vexas_final_RNA_data_celltypes.rds")
+rna.obj.se <- subset(rna.obj, CellType == cluster)
+rna.obj.se <- FilterGenes(object = rna.obj.se, min.value = 0, min.cells = 5)
+expressed.genes <- rownames(rna.obj.se@assays$RNA@data)
+rm(rna.obj)
+rm(rna.obj.se)
+gc()
+
+tf.list <- rownames(atac.obj.subset@assays$chromvar_HSC@data)
+names(tf.list) <- tf.list
+
+decide_if_keep_tf <- function(tf) {
+  tf <- tf
+  tf <- gsub("\\(.*\\)", "", tf)
+  tf.list <- strsplit(tf, "::") %>% unlist()
+  for (tf.current in tf.list) {
+    if(tf.current %in% expressed.genes) {
+      return(TRUE)
+    }
+  }
+  print(paste0("Excluding TF: ", tf))
+  return(FALSE)
+}
+
+tf.list.annotated <- lapply(tf.list, function(tf) {decide_if_keep_tf(tf)})
+tf.list.filtered <- tf.list.annotated[tf.list.annotated == T] %>% names(.)
+
+############### Using LMM - compare all MUT and WT cells ####################
+
+# For use with Gotcha helper function included in package
+# atac.obj.subset.donor <- subset(atac.obj.subset, orig.ident %in% c("SG_VX16_ATAC", "VEX_BM10_POS_ATAC", "VEX_BM8_POS_ATAC") & predicted.l2 == "HSC" & predicted.l2.score > 0.3)
+atac.obj.subset.donor <- subset(atac.obj.subset, orig.ident %in% c("VEX_BM8_POS_ATAC", "VEX_BM10_POS_ATAC", "SG_VX16_ATAC", "SG_VX17_ATAC", "SG_VX18_ATAC"))
+atac.obj.subset.donor$clustering_col <- "Constant"
+print(table(atac.obj.subset.donor$Sample))
+
+# ## Randomly downsample to 50 MUT/WT cells per sample
+# downsampled.bcs <- atac.obj.subset.donor@meta.data %>%
+#   rownames_to_column("barcode") %>%
+#   filter(Genotype != "NA") %>%
+#   group_by(orig.ident, Genotype) %>%
+#   slice_sample(n=35) %>%
+#   pull(barcode)
+# atac.obj.subset.donor@meta.data[downsampled.bcs, ] %>% group_by(orig.ident, genotype_pred_manual) %>% count()
+#
+# atac.obj.subset.donor <- subset(atac.obj.subset.donor, cells = downsampled.bcs)
+
+source("/gpfs/commons/home/rmurray/rscripts/general_helpers/DiffLMMPseudocount.R")
+da_motifs.all.cells.genotyped.lmm <- DiffLMMPseudocount(metadata = atac.obj.subset.donor@meta.data,
+                                                        provided.matrix = atac.obj.subset.donor@assays$chromvar_HSC@data[tf.list.filtered, ],
+                                                        sample.column = "orig.ident",
+                                                        cluster.column = "clustering_col",
+                                                        selected.clusters = "Constant",
+                                                        treatment.column = "genotype_pred_manual",
+                                                        treatment.levels = c("WT","MUT"),
+                                                        ncores = 18)
+
+print("Saving...")
+da_motifs.all.cells.genotyped.lmm %>%
+  write_csv(file = paste0("data/chromVAR/JASPAR2020/", cluster,  "_chromvar_analysis_with_lmm_20231205.csv"))
+
+print("Done!")
