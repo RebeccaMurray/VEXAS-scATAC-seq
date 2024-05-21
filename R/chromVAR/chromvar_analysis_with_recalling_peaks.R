@@ -12,8 +12,8 @@ set.seed(1234)
 
 theme_set(theme_bw())
 
-# source("~/rscripts/general_helpers/volcano_plots.R")
-# source("/gpfs/commons/home/rmurray/rscripts/general_helpers/DiffLMMPseudocount.R")
+source("~/rscripts/general_helpers/volcano_plots.R")
+source("/gpfs/commons/home/rmurray/rscripts/general_helpers/DiffLMMPseudocount.R")
 
 plan("multicore", workers = 10)
 # options(future.globals.maxSize = 180000 * 1024^2) # for 250 Gb RAM
@@ -73,7 +73,8 @@ rownames(atac.obj.subset@assays$chromvar_HSC@data) <- plyr::mapvalues(rownames(a
 
 #################### Save updated ATAC obj ####################
 
-# saveRDS(atac.obj.subset, file = paste0("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_", cluster, "_chromvar_20231205.rds"))
+saveRDS(atac.obj.subset, file = paste0("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_", cluster, "_chromvar_20240304.rds"))
+print("Save complete!")
 atac.obj.subset <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_HSC_chromvar_20231205.rds")
 
 
@@ -106,7 +107,7 @@ FilterGenes <-
   }
 
 ## Load the VEXAS RNA object, only keep genes expressed in any cells of that cell type
-rna.obj <- readRDS("~/rscripts/VEXAS_RNA_seurat/data/seurat_objects/vexas_final_RNA_data_celltypes.rds")
+rna.obj <- readRDS("~/rscripts/VEXAS_RNA_seurat/data/seurat_objects/vexas_final_RNA_data_celltypes_umap_updated_20231218.rds")
 rna.obj.se <- subset(rna.obj, CellType == cluster)
 rna.obj.se <- FilterGenes(object = rna.obj.se, min.value = 0, min.cells = 5)
 expressed.genes <- rownames(rna.obj.se@assays$RNA@data)
@@ -141,6 +142,18 @@ atac.obj.subset.donor <- subset(atac.obj.subset, orig.ident %in% c("VEX_BM8_POS_
 atac.obj.subset.donor$clustering_col <- "Constant"
 print(table(atac.obj.subset.donor$Sample))
 
+## Formatting the sample and donor columns
+meta.data.mapping <- read_csv("data/formatting_patient_ids/orig_ident_to_study_id_mapping_2024-03-28.csv")
+atac.obj.subset.donor$Sample <- plyr::mapvalues(atac.obj.subset.donor$orig.ident, from = meta.data.mapping$orig.ident, to = meta.data.mapping$updated_name)
+atac.obj.subset.donor$Sample <- factor(atac.obj.subset.donor$Sample, levels = meta.data.mapping$updated_name %>% sort())
+atac.obj.subset.donor@meta.data %>% count(orig.ident, Sample)
+atac.obj.subset.donor$Donor <- gsub("_BMMC|_CD34.*", "", atac.obj.subset.donor$Sample) %>% gsub("_[A|B]", "", .)
+atac.obj.subset.donor$Donor <- factor(atac.obj.subset.donor$Donor, levels = unique(atac.obj.subset.donor$Donor) %>% sort())
+atac.obj.subset.donor@meta.data %>% count(orig.ident, Sample, Genotype) %>% 
+  dplyr::filter(Genotype %in% c("MUT", "WT")) %>% 
+  pivot_wider(names_from = Genotype, values_from = n) %>% 
+  write_csv("data/metadata/cell_counts_used_tf_motif_analysis_20240411.csv")
+
 # ## Randomly downsample to 50 MUT/WT cells per sample
 # downsampled.bcs <- atac.obj.subset.donor@meta.data %>%
 #   rownames_to_column("barcode") %>%
@@ -155,6 +168,7 @@ print(table(atac.obj.subset.donor$Sample))
 source("/gpfs/commons/home/rmurray/rscripts/general_helpers/DiffLMMPseudocount.R")
 da_motifs.all.cells.genotyped.lmm <- DiffLMMPseudocount(metadata = atac.obj.subset.donor@meta.data,
                                                         provided.matrix = atac.obj.subset.donor@assays$chromvar_HSC@data[tf.list.filtered, ],
+                                                        # provided.matrix = atac.obj.subset.donor@assays$chromvar_celltype@data,
                                                         sample.column = "orig.ident",
                                                         cluster.column = "clustering_col",
                                                         selected.clusters = "Constant",
@@ -164,6 +178,6 @@ da_motifs.all.cells.genotyped.lmm <- DiffLMMPseudocount(metadata = atac.obj.subs
 
 print("Saving...")
 da_motifs.all.cells.genotyped.lmm %>%
-  write_csv(file = paste0("data/chromVAR/JASPAR2020/", cluster,  "_chromvar_analysis_with_lmm_20231205.csv"))
+  write_csv(file = paste0("data/chromVAR/JASPAR2020/", cluster,  "_chromvar_analysis_with_lmm_chromvar_celltype_20240411.csv"))
 
 print("Done!")
