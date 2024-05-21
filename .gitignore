@@ -3,9 +3,11 @@ data/
 output/
 scripts/
 figures/
+backups/
 *.pdf
 *.Rproj
 *.png
+*.h5*
 
 # History files
 .Rhistory
