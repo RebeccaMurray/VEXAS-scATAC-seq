@@ -1,18 +1,19 @@
 library(Signac)
 library(Seurat)
-library(tidyverse)
 library(JASPAR2020)
 library(TFBSTools)
 library(GenomeInfoDb)
 library(EnsDb.Hsapiens.v86)
 library(BSgenome.Hsapiens.UCSC.hg38)
+library(tidyverse)
 library(patchwork)
 library(ggrepel)
+library(parallel)
 set.seed(1234)
 
 theme_set(theme_bw())
 
-atac.obj <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_final_20231103.RDS")
+atac.obj <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_final_custom_limits_celltypes.RDS")
 
 ## Get a list of motif position frequency matrices from JASPAR database
 pfm <- getMatrixSet(
@@ -20,33 +21,75 @@ pfm <- getMatrixSet(
   opts = list(collection = "CORE", tax_group = 'vertebrates', species = "Homo sapiens", all_versions = FALSE)
 )
 
-
-################# Adding motif information (only need to do once) ##################
-
-# add motif information
 DefaultAssay(atac.obj) <- "ATAC"
-atac.obj <- AddMotifs(object = atac.obj, genome = BSgenome.Hsapiens.UCSC.hg38, assay = "ATAC", pfm = pfm)
 
-# Compute a per-cell motif activity score
-DefaultAssay(atac.obj) <- "ATAC"
-atac.obj <- RunChromVAR(
-  object = atac.obj,
-  assay = "ATAC",
-  genome = BSgenome.Hsapiens.UCSC.hg38
-)
+##################################### Calling peaks + running chromvar separately per cell type ######################
 
-################## Create an ID to name matrix for motifs #############
+## run this using gotcha_signac_env_3_17_23
+print("Running CallPeaks...")
 
-## Name to ID matrix
-id.to.name <- data.frame()
-for (item.name in names(pfm)) {
-  print(item.name)
-  id.to.name <- rbind(id.to.name, data.frame(ID = pfm[[item.name]]@ID, name = pfm[[item.name]]@name))
-}
+chromvar.data.list <- mclapply(levels(atac.obj$cluster_celltype), function(current.cell.type) {
+  se <- subset(atac.obj, cluster_celltype == current.cell.type)
+  DefaultAssay(se) <- "ATAC"
+  print("Running for object:")
+  print(se)
+  temp.dir.location <- paste0("/gpfs/commons/home/rmurray/rscripts/VEXAS_ATAC_signac/data/macs2_temp/", current.cell.type, "/")
+  dir.create(temp.dir.location)
+  macs2.peaks <- CallPeaks(se,
+                           outdir = temp.dir.location, 
+                           fragment.tempdir = temp.dir.location, 
+                           macs2.path = "/nfs/sw/macs2/macs2-2.2.7.1/python/bin/macs2")
+  macs2.counts <- FeatureMatrix(fragments = Fragments(se), features = macs2.peaks, cells = colnames(se))
+  annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
+  seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
+  genome(annotations) <- "hg38"
+  
+  print("Peak calling complete")
+  print(se)
+  se[["macs2_peaks_celltype"]] <- CreateChromatinAssay(counts = macs2.counts, annotation = annotations)
+  
+  
+  print("Adding motif information...")
+  # add motif information
+  DefaultAssay(se) <- "macs2_peaks_celltype"
+  se <- AddMotifs(object = se, genome = BSgenome.Hsapiens.UCSC.hg38, assay = "macs2_peaks_celltype", pfm = pfm)
+  
+  print("Running chromvar...")
+  # Compute a per-cell motif activity score
+  DefaultAssay(se) <- "macs2_peaks_celltype"
+  se@assays$chromvar <- NULL
+  se <- RunChromVAR(
+    object = se,
+    new.assay.name = "chromvar_celltype",
+    assay = "macs2_peaks_celltype",
+    genome = BSgenome.Hsapiens.UCSC.hg38
+  )
+  
+  ## Name to ID matrix
+  id.to.name <- data.frame()
+  for (item.name in names(pfm)) {
+    print(item.name)
+    id.to.name <- rbind(id.to.name, data.frame(ID = pfm[[item.name]]@ID, name = pfm[[item.name]]@name))
+  }
+  
+  print("Updating ID names...")
+  
+  ## Replace chromvar assay ID rownames with gene names
+  rownames(se@assays$chromvar_celltype@data) <- plyr::mapvalues(rownames(se@assays$chromvar_celltype@data), from = id.to.name$ID, to = id.to.name$name)
 
-## Replace chromvar assay ID rownames with gene names
-rownames(atac.obj@assays$chromvar@data) <- plyr::mapvalues(rownames(atac.obj@assays$chromvar@data), from = id.to.name$ID, to = id.to.name$name)
+  print("Done!")
+  print(se)
+    
+  ## Return the chromvar matrix
+  return(se@assays$chromvar_celltype@data)
+}, mc.cores = detectCores())
 
-#################### Save updated ATAC obj ####################
+## Save the chromvar data
+print("Saving chromvar data list...")
+saveRDS(chromvar.data.list, "~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/chromvar_data_list.RDS")
 
-saveRDS(atac.obj, "~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_final_20231103.RDS")
+chromvar.data <- do.call(cbind, chromvar.data.list)
+atac.obj[["chromvar_separate_per_celltype"]] <- CreateAssayObject(data = chromvar.data)
+
+print("Saving seurat object...")
+saveRDS(atac.obj, "~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_final_custom_limits_celltypes_chromvar.RDS")

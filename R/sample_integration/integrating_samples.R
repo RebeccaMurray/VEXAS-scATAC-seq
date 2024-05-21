@@ -15,7 +15,7 @@ library(parallel)
 library(tximport)
 library(Biostrings)
 set.seed(1234)
-theme_set(theme_bw())
+theme_set(theme_classic())
 
 ## Define input/output paths
 plots_path = "/gpfs/commons/home/rmurray/rscripts/VEXAS_GoTChA_signac/output/integrated_plots/"
@@ -170,17 +170,52 @@ print_cell_count_info <- function(atac.obj) {
 cat('Before filtering:\n')
 tmp <- lapply(atac.objs, print_cell_count_info)
 
+## Rename with more formal names
+meta.data.mapping <- read_csv("data/formatting_patient_ids/orig_ident_to_study_id_mapping_2024-03-29.csv")
+names.mapping.list <- meta.data.mapping$updated_name
+names(names.mapping.list) <- meta.data.mapping$orig.ident
+
 ## Print QC scatter plot
+nCount.ATAC.limits.list <- list(
+  SG_VX18_ATAC = c(500, 10**3.75),
+  SG_VX17_ATAC = c(500, 10**3.75),
+  SG_VX16_ATAC = c(500, 10**3.75),
+  VEX_BM11_LIN_NEG_ATAC = c(500, 10**3.75),
+  VEX_BM10_POS_ATAC = c(1000, 10**4.75),
+  VEX_BM8_POS_ATAC = c(500, 10**4.25),
+  BM7_LLL_CD34_plus = c(500, 10**4.5), 
+  BM6_LLL_CD34_plus = c(500, 10**4.25),
+  BM5_LLL_CD34_plus = c(1500, 30000)
+)
+
 plist <- lapply(atac.objs, function(x) {
-  x@meta.data %>% 
-    ggplot(aes(x = log10(nCount_ATAC), y = TSS.enrichment)) +
-    geom_bin2d(bins = 70) +
-    scale_fill_continuous(type = "viridis") +
-    ggtitle(x@project.name)
+  limits <- nCount.ATAC.limits.list[[x@project.name]]
+  if (x@project.name == "SG_VX17_ATAC") {
+    x@meta.data %>% 
+      filter(TSS.enrichment < 70) %>%  ## Removes 1 outlier cell that skews the plot
+      ggplot(aes(x = log10(nCount_ATAC), y = TSS.enrichment)) +
+      geom_bin2d(bins = 70) +
+      scale_fill_continuous(type = "viridis") +
+      ggtitle(names.mapping.list[[x@project.name]]) +
+      geom_vline(xintercept = log10(limits[[1]]), linetype = "longdash", color = "red") +
+      geom_vline(xintercept = log10(limits[[2]]), linetype = "longdash", color = "red") +
+      geom_hline(yintercept = 2.5, linetype = "longdash", color = "red")
+  } else {
+    x@meta.data %>% 
+      ggplot(aes(x = log10(nCount_ATAC), y = TSS.enrichment)) +
+      geom_bin2d(bins = 70) +
+      scale_fill_continuous(type = "viridis") +
+      ggtitle(names.mapping.list[[x@project.name]]) +
+      geom_vline(xintercept = log10(limits[[1]]), linetype = "longdash", color = "red") +
+      geom_vline(xintercept = log10(limits[[2]]), linetype = "longdash", color = "red") +
+      geom_hline(yintercept = 2.5, linetype = "longdash", color = "red")
+  }
   
 })
-p.combined <- wrap_plots(plist, ncol = 3)
-ggsave(filename = "figures/current_figure_drafts/pre_filter_QC_heatmaps.pdf", plot = p.combined)
+names(plist) <- names(atac.objs)
+names(plist) <- plyr::mapvalues(names(plist), from = names(names.mapping.list), names.mapping.list)
+p.combined <- wrap_plots(plist[names(plist) %>% sort()], ncol = 3)
+ggsave(filename = "figures/current_figure_drafts/pre_filter_QC_heatmaps_with_limits_20240328.pdf", plot = p.combined, width = 10, height = 8)
 
 
 ## Print QC violin plots
@@ -212,7 +247,7 @@ if (exists("SG_VX18_ATAC", atac.objs)) { ## checked
       TSS.enrichment > 2.5 &
       pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
-      blacklist_ratio < 0.05 
+      blacklist_ratio < 0.05
   )
 }
 
@@ -224,7 +259,7 @@ if (exists("SG_VX17_ATAC", atac.objs)) { ## checked
       TSS.enrichment > 2.5 &
       pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
-      blacklist_ratio < 0.05 
+      blacklist_ratio < 0.05
   )
 }
 
@@ -236,7 +271,7 @@ if (exists("SG_VX16_ATAC", atac.objs)) { ## checked
       TSS.enrichment > 2.5 &
       pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
-      blacklist_ratio < 0.05 
+      blacklist_ratio < 0.05
   )
 }
 
@@ -249,7 +284,7 @@ if (exists("VEX_BM11_LIN_NEG_ATAC", atac.objs)) { ## checked
       TSS.enrichment > 2.5 &
       pct_reads_in_peaks > 15 &
       nucleosome_signal < 5 &
-      blacklist_ratio < 0.05 
+      blacklist_ratio < 0.05
   )
 }
 
@@ -261,7 +296,7 @@ if (exists("VEX_BM10_POS_ATAC", atac.objs)) { ## Checked
       TSS.enrichment > 2.5 &
       pct_reads_in_peaks > 30 &
       nucleosome_signal < 5 &
-      blacklist_ratio < 0.05 
+      blacklist_ratio < 0.05
   )
 }
 
@@ -350,6 +385,69 @@ ggsave(filename = paste0("figures/current_figure_drafts/post_filter_QC_violins.p
 ################################### Remove amulet-identified doublets ##################################
 
 doublet.barcodes <- list.files("/gpfs/commons/groups/landau_lab/VEXAS/doublet_detection/amulet/output/", recursive = T, pattern = "MultipletBarcodes_01.txt")
+## Make doublet QC plots
+doublet.df.list <- lapply(atac.objs, function(atac.obj) {
+  doublet.bcs <- read_csv(paste0("/gpfs/commons/groups/landau_lab/VEXAS/doublet_detection/amulet/output/", atac.obj@project.name, "/MultipletBarcodes_01.txt"), col_names = "barcode") %>% pull(barcode)
+  md <- atac.obj@meta.data %>% 
+    rownames_to_column("barcode") %>% 
+    mutate(doublet_status = if_else(barcode %in% doublet.bcs, "Doublet", "Singlet")) %>% 
+    mutate(doublet_status = factor(doublet_status, levels = c("Singlet", "Doublet"))) %>% 
+    mutate(barcode = paste0(orig.ident, "_", barcode))
+  return(md)
+})
+doublet.df <- do.call(rbind, doublet.df.list)
+doublet.df %>% count(orig.ident, doublet_status)
+doublet.df <- doublet.df %>% mutate(formatted_name = plyr::mapvalues(orig.ident, from = names(names.mapping.list), to = names.mapping.list)) %>% 
+  mutate(formatted_name = factor(formatted_name, levels = names.mapping.list %>% sort()))
+
+## nCount_ATAC boxplots
+doublet.df %>% 
+  ggplot(aes(x = doublet_status, y = nCount_ATAC)) +
+  geom_boxplot() +
+  xlab(element_blank()) +
+  facet_wrap(~ formatted_name, scales = "free")
+ggsave("figures/current_figure_drafts/ATAC_doublet_plots_nCount_ATAC_20240328.pdf", dpi = 300, width = 6, height = 6)
+
+## nFeature_ATAC boxplots
+doublet.df %>% 
+  ggplot(aes(x = doublet_status, y = nFeature_ATAC)) +
+  geom_boxplot() +
+  xlab(element_blank()) +
+  facet_wrap(~ formatted_name, scales = "free")
+ggsave("figures/current_figure_drafts/ATAC_doublet_plots_nFeature_ATAC_20240328.pdf", dpi = 300, width = 6, height = 6)
+
+## Percent detected doublets per sample
+doublet.df %>% 
+  group_by(formatted_name) %>% 
+  summarize(doublet_fraction = sum(doublet_status == "Doublet") / n()) %>% 
+  ggplot(aes(x = reorder(formatted_name, -doublet_fraction), y = doublet_fraction)) +
+  geom_col() +
+  xlab(element_blank()) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  ylab("Detected doublets (%)")
+ggsave("figures/current_figure_drafts/ATAC_doublet_plots_percents_ATAC_20240328.pdf", dpi = 300, width = 6, height = 4)
+
+## Percent detected doublets per sample (color scheme v2)
+doublet.df %>% 
+  group_by(formatted_name) %>% 
+  count(doublet_status) %>% 
+  mutate(frac = n / sum(n)) %>% 
+  # summarize(doublet_fraction = sum(doublet_status == "Doublet") / n(), singlet_fraction = sum(doublet_status == "Sing") / n()) %>% 
+  ggplot(aes(x = formatted_name, y = frac, fill = doublet_status)) +
+  geom_col() +
+  xlab(element_blank()) +
+  scale_fill_manual(values = c(Singlet = "grey80", Doublet = "black")) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  coord_cartesian(ylim = c(0, 1)) +
+  ylab("Percent of cells")
+ggsave("figures/current_figure_drafts/ATAC_doublet_plots_percents_ATAC_color_scheme_v2.pdf", dpi = 300, width = 6, height = 4)
+
+
+## Actually remove the doublets
 atac.objs <- lapply(atac.objs, function(atac.obj) {
   doublet.bcs <- read_csv(paste0("/gpfs/commons/groups/landau_lab/VEXAS/doublet_detection/amulet/output/", atac.obj@project.name, "/MultipletBarcodes_01.txt"), col_names = "barcode") %>% pull(barcode)
   atac.obj <- subset(atac.obj, cells = setdiff(atac.obj@meta.data %>% rownames, doublet.bcs))
