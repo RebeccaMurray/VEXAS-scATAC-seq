@@ -15,6 +15,7 @@ theme_set(theme_classic())
 source("~/rscripts/general_helpers/VEXAS_color_palettes.R")
 source("~/rscripts/general_helpers/volcano_plots.R")
 source("~/rscripts/general_helpers/custom_fgsea_helpers.R")
+source("~/rscripts/general_helpers/custom_hypergeometric_helpers.R")
 
 atac.obj <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_final_custom_limits_celltypes.RDS")
 
@@ -24,6 +25,15 @@ atac.obj <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC
 ## Set an order for the cluster annotations
 celltype.order <- c("HSC", "LMPP", "EMP", "Early Eryth", "Late Eryth", "MkP", "BaEoMa", "CLP", "GMP", "CD14 Mono", "B", "Plasma", "pre-mDC", "pDC", "MAIT", "CD4 T", "CD8 T", "NK") ## Ignore the Stromal cluster
 atac.obj$CellType <- factor(atac.obj$cluster_celltype, levels = celltype.order)
+
+## Formatting the sample and donor columns
+meta.data.mapping <- read_csv("data/formatting_patient_ids/orig_ident_to_study_id_mapping_2024-03-29.csv")
+atac.obj$Sample <- plyr::mapvalues(atac.obj$orig.ident, from = meta.data.mapping$orig.ident, to = meta.data.mapping$updated_name)
+atac.obj$Sample <- factor(atac.obj$Sample, levels = meta.data.mapping$updated_name %>% sort())
+atac.obj@meta.data %>% count(orig.ident, Sample)
+atac.obj$Donor <- gsub("_BMMC|_CD34.*", "", atac.obj$Sample) %>% gsub("_[A|B]", "", .)
+atac.obj$Donor <- factor(atac.obj$Donor, levels = unique(atac.obj$Donor) %>% sort())
+atac.obj@meta.data %>% count(orig.ident, Sample, Donor)
 
 ## Get metadata plot with coordinates
 md <- atac.obj[[]]
@@ -44,6 +54,44 @@ atac.obj$Genotype <- factor(atac.obj$Genotype, levels = c("WT", "MUT", "NA"))
 atac.obj@meta.data %>% 
   count(Genotype, genotype_pred_manual)
 
+
+##################################### Saving metadata for tables ####################################################
+
+## Donor, genotype
+atac.obj@meta.data %>% 
+  group_by(Sample, Genotype) %>% 
+  count() %>% 
+  pivot_wider(names_from = Genotype, values_from = n) %>% 
+  mutate(total = sum(MUT, WT, `NA`)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT) / total) %>% 
+  arrange(-frac_genotyped) %>% 
+  write_csv("data/metadata/cell_counts_donor_genotype.csv")
+
+## Cell type, genotype
+atac.obj@meta.data %>% 
+  group_by(CellType, Genotype) %>% 
+  count() %>% 
+  pivot_wider(names_from = Genotype, values_from = n, values_fill = 0) %>% 
+  mutate(total = sum(MUT, WT, `NA`, na.rm = T)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT, na.rm = T) / total) %>% 
+  mutate(mut_cell_frequency = MUT / sum(MUT, WT)) %>% 
+  arrange(-frac_genotyped) %>% 
+  write_csv("data/metadata/cell_counts_celltype_genotype.csv")
+
+
+## Cell type, genotype, donor
+atac.obj@meta.data %>% 
+  filter(CellType == "HSC") %>% 
+  group_by(Donor, Genotype) %>% 
+  count() %>% 
+  pivot_wider(names_from = Genotype, values_from = n, values_fill = 0) %>% 
+  mutate(total = sum(MUT, WT, `NA`)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT) / total) %>% 
+  mutate(mut_cell_frequency = MUT / sum(MUT, WT)) %>% 
+  ungroup() %>% 
+  arrange(-total) %>% 
+  write_csv("data/metadata/cell_counts_celltype_genotype_HSCs.csv")
+
 #################################### Making plots ########################################
 
 # ## Plot orig.ident
@@ -63,33 +111,37 @@ p.sample.origin.split <- DimPlot(atac.obj, split.by = "Sample", group.by = "Samp
   ggtitle(element_blank()) + theme(legend.position = "none")
   # scale_color_manual(values = ggsci::pal_aaas()(length(unique(md$Sample))))
 p.sample.origin.split
-ggsave("figures/current_figure_drafts/UMAP_ATAC_sample_split.pdf", plot = p.sample.origin.split, device = "pdf", dpi = 300, width = 10, height = 8, unit = "in")
+ggsave("figures/current_figure_drafts/UMAP_ATAC_sample_split_20240328.pdf", plot = p.sample.origin.split, device = "pdf", dpi = 300, width = 10, height = 8, unit = "in")
 
 
 ## Plot QC metrics - number of fragments
 p.fragments <- md %>% 
-  ggplot(aes(x = Donor, y = log10(nCount_ATAC), fill = Donor)) +
+  ggplot(aes(x = reorder(Donor, -log10(nCount_ATAC)), y = log10(nCount_ATAC), fill = Donor)) +
   geom_boxplot() + 
   theme(legend.position = "none") +
   # geom_hline(yintercept = log10(1500), linetype = "longdash") + 
-  ylab("Log10(ATAC fragments)")
+  ylab("ATAC fragments (log10)") +
+  xlab("Patient") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 p.fragments
-ggsave("figures/current_figure_drafts/ATAC_num_fragments.pdf", plot = p.fragments, device = "pdf", dpi = 300, width = 4, height = 3, unit = "in")
+ggsave("figures/current_figure_drafts/ATAC_num_fragments_sorted_20240420.pdf", plot = p.fragments, device = "pdf", dpi = 300, width = 4, height = 3, unit = "in")
 
-## Plot QC metrics - number of fragments
+## Plot QC metrics - nucleosome signal
 p.nucleosome <- md %>% 
-  ggplot(aes(x = Donor, y = nucleosome_signal, fill = Donor)) +
+  ggplot(aes(x = reorder(Donor, -nucleosome_signal), y = nucleosome_signal, fill = Donor)) +
   geom_boxplot() + 
   theme(legend.position = "none") +
-  ylab("Nucleosome signal")
+  ylab("Nucleosome signal") +
+  xlab("Patient") +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
 p.nucleosome
-ggsave("figures/current_figure_drafts/ATAC_nucleosome_signal.pdf", plot = p.nucleosome, device = "pdf", dpi = 300, width = 4, height = 3, unit = "in")
+ggsave("figures/current_figure_drafts/ATAC_nucleosome_signal_20240328.pdf", plot = p.nucleosome, device = "pdf", dpi = 300, width = 4, height = 3, unit = "in")
 
 
 ## Plot QC metrics - fragment length
 p.frag.length <- FragmentHistogram(atac.obj, group.by = "Donor", assay = "ATAC") + NoLegend()
 p.frag.length
-ggsave("figures/current_figure_drafts/ATAC_fragment_length.pdf", plot = p.frag.length, device = "pdf", dpi = 300, width = 5, height = 5, unit = "in")
+ggsave("figures/current_figure_drafts/ATAC_fragment_length_20240328.pdf", plot = p.frag.length, device = "pdf", dpi = 300, width = 5, height = 5, unit = "in")
 
 ## Plot the azimuth labels
 to.plot.tags <- atac.obj@meta.data %>% group_by(predicted.l2) %>% count() %>% filter(n > 50) %>% pull(predicted.l2)
@@ -147,8 +199,7 @@ p.phospho <- ggplot(md.na, aes(x = UMAP1, y = UMAP2)) +
   scale_y_continuous(breaks = NULL) +
   theme(axis.line = element_line(arrow = arrow()), axis.title = element_text(hjust = 0)) + coord_fixed()
 p.phospho
-ggsave("figures/current_figure_drafts/UMAP_ATAC_phospho_sample_highlight.pdf", device = "pdf", width = 5, height = 4)
-ggsave("figures/current_figure_drafts/UMAP_ATAC_phospho_sample_highlight.tiff", device = "tiff", width = 5, height = 4)
+ggsave("figures/current_figure_drafts/UMAP_ATAC_phospho_sample_highlight_20240328.tiff", device = "tiff", width = 5, height = 4)
 
 #################################### Making QC figures ########################################
 
@@ -200,6 +251,55 @@ ggsave(filename = paste0("figures/current_figure_drafts/QC_violins_final_object.
 
 
 #################################### Making plots - genotyping ########################################
+
+## Print the genotyping fraction (overall)
+atac.obj@meta.data %>% 
+  count(Genotype) %>% 
+  pivot_wider(names_from = Genotype, values_from = n) %>% 
+  mutate(total = sum(MUT, WT, `NA`)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT) / total) %>% 
+  arrange(-frac_genotyped)
+
+## Print the genotyping fraction (by sample)
+atac.obj@meta.data %>% 
+  group_by(Donor, Genotype) %>% 
+  count() %>% 
+  pivot_wider(names_from = Genotype, values_from = n) %>% 
+  mutate(total = sum(MUT, WT, `NA`)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT) / total) %>% 
+  arrange(-frac_genotyped)
+
+## Print the genotyping fraction (by sample, stat summaries)
+atac.obj@meta.data %>% 
+  group_by(Donor, Genotype) %>% 
+  count() %>% 
+  pivot_wider(names_from = Genotype, values_from = n) %>% 
+  mutate(total = sum(MUT, WT, `NA`)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT) / total) %>% 
+  ungroup() %>% 
+  summarize(mean_frac_genotyped = mean(frac_genotyped), sd = sd(frac_genotyped))
+
+## Print the genotyping fraction (HSCs)
+atac.obj@meta.data %>%
+  filter(CellType == "HSC") %>% 
+  group_by(Donor, Genotype) %>% 
+  count() %>% 
+  pivot_wider(names_from = Genotype, values_from = n, values_fill = 0) %>% 
+  mutate(total = sum(MUT, WT, `NA`)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT) / total) %>% 
+  arrange(-frac_genotyped) %>% write_csv("data/genotyping_metrics_ATAC_HSCs.csv")
+
+## Print the genotyping fraction (HSPCs)
+atac.obj@meta.data %>%
+  filter(CellType %in% c("HSC", "EMP", "LMPP", "MkP", "GMP")) %>% 
+  group_by(Donor, Genotype) %>% 
+  count() %>% 
+  pivot_wider(names_from = Genotype, values_from = n, values_fill = 0) %>% 
+  mutate(total = sum(MUT, WT, `NA`)) %>% 
+  mutate(frac_genotyped = sum(MUT, WT) / total) %>% 
+  arrange(-frac_genotyped) %>% write_csv("data/genotyping_metrics_ATAC_HSPCs.csv")
+
+
 
 ## Genotyping UMAP (points)
 mut.count <- md %>% filter(Genotype == "MUT") %>% nrow()
@@ -266,7 +366,7 @@ per.patient.plots <- lapply(levels(atac.obj$Donor), function(x) {
   return(p.donor.genotyped)
 }) 
 p.combined <- wrap_plots(per.patient.plots, nrow = 2)
-ggsave("figures/current_figure_drafts/ATAC_UMAP_genotyping_split.tiff", plot = p.combined, device = "tiff", dpi = 300, width = 12, height = 5.5)
+ggsave("figures/current_figure_drafts/ATAC_UMAP_genotyping_split_20240328.tiff", plot = p.combined, device = "tiff", dpi = 300, width = 12, height = 6)
 
 
 ## Print the overall genotyping fraction
@@ -340,24 +440,51 @@ p.celltypes <- ggplot(md, aes(x = UMAP1, y = UMAP2, color = CellType)) +
 p.celltypes
 ggsave("figures/current_figure_drafts/UMAP_ATAC_celltypes_no_labels.pdf", device = "pdf", dpi = 300, width = 7, height = 7, unit = "in")
 
+
+########################################### Making coverage plots #############################################
+
 ## Plotting coverage track of a few important genes
 atac.obj.subset <- subset(atac.obj, CellType == "HSC" & Genotype %in% c("MUT", "WT"))
-Idents(atac.obj.subset) <- "Genotype"
+atac.obj.subset$Genotype_format <- gsub("WT", "_WT", atac.obj.subset$Genotype)
+Idents(atac.obj.subset) <- "Genotype_format"
+# vexas.genotyping.palette.custom <- c(MUT = vexas.genotyping.palette$MUT, `_WT` = vexas.genotyping.palette$
+
 CoveragePlot(atac.obj.subset, region = "chrX-47198691-47199456", group.by = "Genotype", assay = "ATAC", extend.upstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette)
 ggsave("figures/current_figure_drafts/coverage_plot_UBA1_mutation_site.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
-CoveragePlot(atac.obj.subset, region = "DDIT4", group.by = "Genotype", assay = "ATAC", extend.upstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette)
-ggsave("figures/current_figure_drafts/coverage_plot_DDIT4.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
-CoveragePlot(atac.obj.subset, region = "DDIT4", group.by = "Genotype", assay = "ATAC", idents = c("MUT"), extend.upstream = 2000, ymax = 22) & scale_fill_manual(values = vexas.genotyping.palette)
-ggsave("figures/current_figure_drafts/coverage_plot_DDIT4_MUT.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
-CoveragePlot(atac.obj.subset, region = "DDIT4", group.by = "Genotype", assay = "ATAC", idents = c("WT"), extend.upstream = 2000, ymax = 22) & scale_fill_manual(values = vexas.genotyping.palette)
-ggsave("figures/current_figure_drafts/coverage_plot_DDIT4_WT.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
 
-CoveragePlot(atac.obj.subset, region = "chr2-112836779-112836779", group.by = "Genotype", assay = "ATAC", extend.upstream = 2000, extend.downstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette)
-ggsave("figures/current_figure_drafts/coverage_plot_IL1B.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
-CoveragePlot(atac.obj.subset, region = "chr2-112836779-112836779", group.by = "Genotype", assay = "ATAC",  idents = c("MUT"), ymax = 5.6, extend.upstream = 2000, extend.downstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette)
-ggsave("figures/current_figure_drafts/coverage_plot_IL1B_MUT.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
-CoveragePlot(atac.obj.subset, region = "chr2-112836779-112836779", group.by = "Genotype", assay = "ATAC",  idents = c("WT"), ymax = 5.6, extend.upstream = 2000, extend.downstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette)
-ggsave("figures/current_figure_drafts/coverage_plot_IL1B_WT.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
+## Plot DDIT4
+CoveragePlot(atac.obj.subset, region = "chr10-72273000-72274500", group.by = "Genotype", assay = "ATAC", ymax = 24, peaks = F) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_DDIT4.pdf", device = "pdf", dpi = 300, width = 4, height = 5, unit = "in")
+CoveragePlot(atac.obj.subset, region = "chr10-72273000-72274500", group.by = "Genotype", assay = "ATAC", idents = c("MUT"), peaks = F, ymax = 22) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_DDIT4_MUT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in")
+CoveragePlot(atac.obj.subset, region = "chr10-72273000-72274500", group.by = "Genotype", assay = "ATAC", idents = c("WT"), peaks = F, ymax = 22) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_DDIT4_WT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in")
+
+## Plot CXCL3
+CoveragePlot(atac.obj.subset, region = "chr4-74038000-74039500", group.by = "Genotype", assay = "ATAC", peaks = F, ymax = 10) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_CXCL3.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
+CoveragePlot(atac.obj.subset, region = "chr4-74038000-74039500", group.by = "Genotype", assay = "ATAC", peaks = F, ymax = 10, idents = c("MUT")) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_CXCL3_MUT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in")
+CoveragePlot(atac.obj.subset, region = "chr4-74038000-74039500", group.by = "Genotype", assay = "ATAC", peaks = F, ymax = 10, idents = c("WT")) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_CXCL3_WT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in")
+
+## Plot IFITM3
+CoveragePlot(atac.obj.subset, region = "chr11-326000-328000", group.by = "Genotype", assay = "ATAC", peaks = F) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_CXCL3.pdf", device = "pdf", dpi = 300, width = 4, height = 4, unit = "in")
+CoveragePlot(atac.obj.subset, region = "chr4-74038000-74039500", group.by = "Genotype", assay = "ATAC", peaks = F, ymax = 10, idents = c("MUT")) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_CXCL3_MUT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in")
+CoveragePlot(atac.obj.subset, region = "chr4-74038000-74039500", group.by = "Genotype", assay = "ATAC", peaks = F, ymax = 10, idents = c("WT")) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_CXCL3_WT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in")
+
+
+## Plot IL1B
+CoveragePlot(atac.obj.subset, region = "chr2-112836000-112837500", group.by = "Genotype", assay = "ATAC", peaks = F, ymax = 8) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_IL1B.pdf", device = "pdf", dpi = 300, width = 4, height = 5, unit = "in")
+CoveragePlot(atac.obj.subset, region = "chr2-112836000-112837500", group.by = "Genotype_format", assay = "ATAC", peaks = F, ymax = 8, idents = c("MUT")) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_IL1B_MUT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in", aspect.ratio = 1)
+CoveragePlot(atac.obj.subset, region = "chr2-112836000-112837500", group.by = "Genotype_format", assay = "ATAC", peaks = F, ymax = 8, idents = c("WT")) & scale_fill_manual(values = vexas.genotyping.palette)
+ggsave("figures/current_figure_drafts/coverage_plot_IL1B_WT.pdf", device = "pdf", dpi = 300, width = 4, height = 3.5, unit = "in", )
+
 
 ## Extra plots of other regions of interest
 CoveragePlot(atac.obj.subset, region = "chr13-28098592-28100592", group.by = "Genotype", assay = "ATAC", extend.downstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette) # FLT3
@@ -370,6 +497,7 @@ CoveragePlot(atac.obj.subset, region = "chr22-39518000-39521000", group.by = "Ge
 CoveragePlot(atac.obj.subset, region = "MCL1", group.by = "Genotype", assay = "ATAC", extend.downstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette)
 CoveragePlot(atac.obj.subset, region = "HLA-DRA", group.by = "Genotype", assay = "ATAC", extend.upstream = 2000) & scale_fill_manual(values = vexas.genotyping.palette)
 CoveragePlot(atac.obj.subset, region = "chr5-52987000-52991000", group.by = "Genotype", assay = "ATAC") & scale_fill_manual(values = vexas.genotyping.palette)
+
 
 ###################################### Plots - cell type proportion bar plots ################################################
 
@@ -465,11 +593,55 @@ ggsave("figures/current_figure_drafts/MUT_cell_freq_scatter_plot.pdf", plot = p.
 
 ############################################### HSC - gene score volcano plot #############################
 
-de.results <- read_csv("data/differential_gene_scores_ArchR/VEXAS_MUT_vs_WT/HSC_DiffLMM2_10p_20231206.csv") %>% mutate(avg_log2FC = log2(fc))
+# de.results <- read_csv("data/differential_gene_scores_ArchR/VEXAS_MUT_vs_WT/HSC_DiffLMM2_expressed_only_5p_RNA_obj.csv") %>% 
+#   mutate(avg_log2FC = log2(fc))
+
+de.results <- read_csv("data/differential_gene_scores_ArchR/VEXAS_MUT_vs_WT/HSC_genotyping_updated_DiffLMM2_20240304.csv") %>%
+  mutate(avg_log2FC = log2(fc))
+
+plot_volcano(de.results, effect_line = 0.25, stat_line = 0.05, stat_column = "pval", max.overlaps = 20) + ggtitle("HSC gene scores, MUT vs. WT") | 
+  plot_volcano(de.results, effect_line = 0.25, stat_line = 0.1, stat_column = "fdr") + ggtitle("HSC gene scores, MUT vs. WT")
+ggsave("figures/current_figure_drafts/gene_score_gsea_20240125.pdf", width = 12, height = 10)
+
+plot_volcano(de.results, effect_line = 0.25, stat_line = 0.05, stat_column = "fdr") + ggtitle("HSC gene scores, MUT vs. WT") +
+  coord_cartesian(xlim = c(-1.5, 1.5), ylim = c(0, 5)) + theme(legend.position = "none")
+ggsave("figures/current_figure_drafts/ATAC_HSC_diff_gene_score_fdr_20240223.pdf", plot = last_plot(), device = "pdf", width = 6, height = 6)
+plot_volcano(de.results, effect_line = 0.25, stat_line = 0.05, stat_column = "pval") + ggtitle("HSC gene scores, MUT vs. WT") +
+  coord_cartesian(xlim = c(-1.5, 1.5), ylim = c(0, 5)) + theme(legend.position = "none")
+ggsave("figures/current_figure_drafts/ATAC_HSC_diff_gene_score_pval_20240223.pdf", plot = last_plot(), device = "pdf", width = 6, height = 6)
+
+atac.obj.hsc <- subset(atac.obj, cluster_celltype == "HSC" & genotype_pred_manual %in% c("MUT", "WT") & orig.ident %in% c("VEX_BM8_POS_ATAC", "VEX_BM10_POS_ATAC", "SG_VX16_ATAC", "SG_VX17_ATAC", "SG_VX18_ATAC"))
+atac.obj.hsc <- subset(atac.obj.hsc, nCount_ATAC > 1500 & pct_reads_in_peaks > 50)
+atac.obj.hsc@meta.data %>% count(Sample, Genotype) %>% print()
+atac.obj.hsc@meta.data %>% count(Sample) %>% print()
+VlnPlot(atac.obj.hsc, features = c("nCount_ATAC", "TSS.enrichment", "pct_reads_in_peaks"), group.by = "orig.ident")
+VlnPlot(atac.obj.hsc, assay = "RNA_ArchR", feature = "DDIT4", split.by = "genotype_pred_manual", group.by = "orig.ident")
 
 fgsea.out <- run_fgsea_for_list(de.results)
+
+## Try re-ranking
+de_results.ranked <- de.results %>%
+  filter(!is.na(pval)) %>% 
+  # mutate(rank = -log10(pval)*sign(avg_log2FC)) %>%
+  mutate(rank = avg_log2FC) %>%
+  # mutate(rank = -log10(pval)) %>%
+  arrange(-rank)
+current.ranks.list <- de_results.ranked$rank
+names(current.ranks.list) <- de_results.ranked$feature
+
+fgsea.out <- run_fgsea_for_list(de.results, ranks.list = current.ranks.list)
+## Save the gsea output
 fgsea.out %>% 
-  write_csv("data/differential_gene_scores_ArchR/VEXAS_MUT_vs_WT/gsea_output/HSC_DiffLMM2_10p_20231206_gsea.csv")
+     write_csv("data/differential_gene_scores_ArchR/VEXAS_MUT_vs_WT/gsea_output/HSC_DiffLMM2_fold_change_rank_gsea_2024-02-23.csv")
+
+plot_enrichment(ranks.list = current.ranks.list, pathway.name = "HALLMARK_INFLAMMATORY_RESPONSE", pval_col = "pval", pval_show = "padj")
+
+## Adjust with fdr
+fgsea.out$fdr <- p.adjust(fgsea.out$pval, method = "fdr")
+fgsea.out %>% 
+  arrange(pval) %>% head()
+# fgsea.out %>% 
+#   write_csv("data/differential_gene_scores_ArchR/VEXAS_MUT_vs_WT/gsea_output/HSC_DiffLMM2_10p_20231206_gsea.csv")
 
 ## Use a custom set of msigdb gene sets, if not specified
 m_t2g <- tibble()
@@ -495,16 +667,17 @@ han.modules <- list(
 pathways <- c(pathways, han.modules)
 
 volcano.gene.list <- list(
-  `all_remaining` = de.results %>% filter(pval < 0.001 | (abs(avg_log2FC) > 0.9 & pval < 0.05))%>% pull(feature)
-  # `ATF4 activity` = c(intersect(pathways$`ATF4 targets (Han et al.)`, de.results %>% filter(pval < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature)), "ATF4", "DDIT4"),
-  # `Inflammation` = intersect(pathways$HALLMARK_TNFA_SIGNALING_VIA_NFKB, de.results %>% filter(pval < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature)),
+  `MUT` = de.results %>% slice_min(pval, n = 20) %>% filter(avg_log2FC > 0) %>% pull(feature),
+  `WT` = de.results %>% slice_min(pval, n = 20) %>% filter(avg_log2FC < 0) %>% pull(feature)
+  # `ATF4` = c(intersect(pathways$`ATF4 targets (Han et al.)`, de.results %>% filter(pval < 0.05) %>% pull(feature))),
+  # `Inflammation` = intersect(pathways$HALLMARK_INFLAMMATORY_RESPONSE, de.results %>% filter(pval < 0.05) %>% pull(feature)),
   # `Interferon` = c(union(
   #   intersect(pathways$HALLMARK_INTERFERON_ALPHA_RESPONSE, de.results %>% filter(pval < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature)),
   #   intersect(pathways$HALLMARK_INTERFERON_GAMMA_RESPONSE, de.results %>% filter(pval < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature))
   # )),
   # `Antigen presentation` = c(de.results %>% filter(pval < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature) %>% grep("HLA", ., value = T), "CD74", "B2M", "CD99", "CIITA"),
   # `Translation` = intersect(pathways$REACTOME_TRANSLATION, de.results %>% filter(pval < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature)),
-  # `CHOP` = intersect(pathways$CHOP_01, de.results %>% filter(pval < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature))
+  # `CHOP` = c(intersect(pathways$`CHOP targets (Han et al.)`, de.results %>% filter(pval < 0.05) %>% pull(feature)))
 )
 # volcano.gene.list <- list(
 #   `P53` = intersect(fgsea.out %>% filter(pathway == "HALLMARK_P53_PATHWAY") %>% pull(leadingEdge) %>% unlist(), de.results %>% filter(fdr < 0.05 & abs(avg_log2FC) > 0.2) %>% pull(feature)),
@@ -515,21 +688,19 @@ volcano.gene.list <- list(
 
 ## Pick colors + plot volcano
 volcano.gene.list.colors <- c(
-  `all_remaining` = "#38A6A5",
-  `Interferon` = "#CC503E",
+  `all_remaining` = "#5F4690",
+  # `Interferon` = "#CC503E",
   `Inflammation` = "#94346E",
-  `ATF4 activity` = "#0F8554", 
-  `Translation` = "#5F4690",
+  `ATF4` = "#0F8554", 
+  # `Translation` = "#5F4690",
   `CHOP` = "#1D6996"
 )
-p.HSC.volcano <- plot_volcano(de.results, metadata.df =atac.obj@meta.data %>% dplyr::filter(cluster_celltype == "HSC") %>% dplyr::filter(orig.ident %in% c("SG_VX16_ATAC", "VEX_BM10_POS_ATAC", "VEX_BM8_POS_ATAC", "SG_VX17_ATAC", "SG_VX18_ATAC")), 
-                              stat_line = 0.05, effect_line = 0.2, stat_column = "pval", title = paste0("HSCs"), 
-             genotyping_column = "Genotype", 
-             only_genes = volcano.gene.list, only_genes_colors = volcano.gene.list.colors, max.overlaps = 20) + 
-  theme(legend.position = "bottom") +
-  coord_cartesian(ylim=c(0, 5), xlim = c(-2, 2)) + ggtitle("HSC differential gene scores")
+p.HSC.volcano <- plot_volcano(de.results, stat_line = 0.05, effect_line = 0.2, stat_column = "pval", title = paste0("HSCs"), 
+            only_genes = volcano.gene.list, only_genes_colors = vexas.genotyping.palette, max.overlaps = 20) + 
+  theme(legend.position = "none") +
+  coord_cartesian(ylim=c(0, 5), xlim = c(-1.5, 1.5)) + ggtitle("HSC differential gene scores")
 p.HSC.volcano 
-ggsave("figures/current_figure_drafts/ATAC_HSC_diff_gene_score_all_genes_additional.pdf", plot = p.HSC.volcano, device = "pdf", width = 7, height = 7)
+ggsave("figures/current_figure_drafts/ATAC_HSC_diff_gene_scores_20240304.pdf", plot = p.HSC.volcano, device = "pdf", width = 6, height = 5)
 
 ## Plot volcano, without labels
 p.HSC.volcano <- plot_volcano(de.results, metadata.df =atac.obj@meta.data %>% dplyr::filter(cluster_celltype == "HSC") %>% dplyr::filter(orig.ident %in% c("SG_VX16_ATAC", "VEX_BM10_POS_ATAC", "VEX_BM8_POS_ATAC", "SG_VX17_ATAC", "SG_VX18_ATAC")), 
@@ -538,22 +709,89 @@ p.HSC.volcano <- plot_volcano(de.results, metadata.df =atac.obj@meta.data %>% dp
                               max.overlaps = 20, label_genes = F) + 
   theme(legend.position = "bottom") +
   coord_cartesian(ylim=c(0, 5), xlim = c(-2, 2)) + ggtitle("HSC differential gene scores")
-ggsave("figures/current_figure_drafts/ATAC_HSC_diff_gene_score_no_labels.pdf", plot = p.HSC.volcano, device = "pdf", width = 7, height = 7)
+ggsave("figures/current_figure_drafts/ATAC_HSC_diff_gene_score_no_labels.pdf", plot = p.HSC.volcano, device = "pdf", width = 7, height = 6)
 
 ## Enrichment plots
-p1 <- plot_enrichment(de.results, pathway = "HALLMARK_INFLAMMATORY_RESPONSE", pval_show = "pval") + theme_classic() + geom_line(color = "#BA242A", size = 1)
+p1 <- plot_enrichment(de.results, ranks.list = current.ranks.list, pathway = "HALLMARK_INFLAMMATORY_RESPONSE", pval_show = "padj") + theme_classic() + geom_line(color = "#BA242A", size = 1)
 p2 <- plot_enrichment(de.results, pathway = "CHOP_01", pval_show = "pval") + theme_classic() + geom_line(color = "#BA242A", size = 1) + ggtitle("CHOP target genes")
 p3 <- plot_enrichment(de.results, pathway = "ATF4 targets (Han et al.)", pval_show = "pval") + geom_line(color = "#BA242A", size = 1) + ggtitle("ATF4 targets (Han et al.)")
 p4 <- plot_enrichment(de.results, pathway = "HALLMARK_P53_PATHWAY", pval_show = "pval") + theme_classic()
 p.combined <- (p1 / p3 / p2)
 p.combined
 ggsave("figures/current_figure_drafts/ATAC_gene_score_gsea_inflammatory_response.pdf", plot = p.combined, device = "pdf", width = 4, height = 7)
+ggsave("figures/current_figure_drafts/ATAC_gene_score_gsea_inflammatory_response.pdf", plot = p1, device = "pdf", width = 4, height = 2.5)
 
+## Run a hypergeometric test
+gene.list <- de.results %>% filter(avg_log2FC < 0 & pval < 0.05) %>% pull(feature)
+gene.list <- de.results %>% filter(avg_log2FC > 0) %>% slice_min(order_by = pval, n = 1000) %>% pull(feature)
+
+m_t2g <- tibble()
+m_t2g <- rbind(m_t2g, msigdbr(species = "Homo sapiens", category = "H", subcategory = NULL) %>% filter(gs_name %in% fgsea.pathways))
+m_t2g <- rbind(m_t2g, msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CP:KEGG") %>% filter(gs_name %in% fgsea.pathways))
+m_t2g <- rbind(m_t2g, msigdbr(species = "Homo sapiens", category = "C5") %>% filter(gs_name %in% fgsea.pathways))
+m_t2g <- rbind(m_t2g, msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CP:REACTOME") %>% filter(gs_name %in% fgsea.pathways))
+m_t2g <- rbind(m_t2g, msigdbr(species = "Homo sapiens", category = "C2", subcategory = "CP:REACTOME") %>% filter(gs_name %in% fgsea.pathways))
+m_t2g <- rbind(m_t2g, msigdbr(species = "Homo sapiens", category = "C3", subcategory = "TFT:GTRD") %>% filter(gs_name %in% fgsea.pathways))
+m_t2g <- rbind(m_t2g, msigdbr(species = "Homo sapiens", category = "C3", subcategory = "TFT:TFT_Legacy") %>% filter(gs_name %in% fgsea.pathways))
+m_t2g <- m_t2g %>% select(gs_name, human_entrez_gene) %>% dplyr::rename(TermID = gs_name) %>% dplyr::rename(geneID = human_entrez_gene)
+
+## Add GoT paper modules
+got.modules <- read_csv("~/rscripts/VEXAS_RNA_seurat/data/gene_module_lists/GoT_paper_references/modules.csv")
+additional.modules <- got.modules %>% pivot_longer(cols = colnames(got.modules), names_to = "TermID", values_to = "geneID") %>% 
+  filter(!is.na(geneID))
+## Add Han et al modules
+atf4.df <- data.frame(geneID = read_csv("~/rscripts/VEXAS_RNA_seurat/data/gene_module_lists/Han_et_al_references/ATF4_only.txt") %>% filter(Feature != "N/A") %>% dplyr::rename(geneID = Feature))
+atf4.df$TermID = "ATF4 only (Han et al.)"
+atf4.df <- atf4.df %>% select(TermID, geneID)
+chop.df <- data.frame(geneID = read_csv("~/rscripts/VEXAS_RNA_seurat/data/gene_module_lists/Han_et_al_references/CHOP_only.txt") %>% filter(Feature != "N/A") %>% dplyr::rename(geneID = Feature))
+chop.df$TermID = "CHOP only (Han et al.)"
+chop.df <- chop.df %>% select(TermID, geneID)
+
+additional.modules <- rbind(additional.modules, atf4.df)
+additional.modules <- rbind(additional.modules, chop.df)
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+hs <- org.Hs.eg.db
+mapping <- AnnotationDbi::select(hs, 
+                                 keys = additional.modules$geneID,
+                                 columns = c("ENTREZID", "SYMBOL"),
+                                 keytype = "SYMBOL")
+additional.modules <- merge(additional.modules, mapping, by.x = "geneID", by.y = "SYMBOL")
+additional.modules <- additional.modules %>% dplyr::select(TermID, ENTREZID) %>% dplyr::rename(geneID = ENTREZID) %>% 
+  filter(!is.na(geneID))
+m_t2g <- rbind(m_t2g, additional.modules)
+gene.list.entrez.ids <- AnnotationDbi::select(hs, 
+                                 keys = gene.list,
+                                 columns = c("ENTREZID", "SYMBOL"),
+                                 keytype = "SYMBOL")
+res.custom <- enricher(gene.list.entrez.ids$ENTREZID, gson = NULL, TERM2GENE = m_t2g, pvalueCutoff = 1)
+res.custom@result %>% head
+
+res.custom@result %>% View
+
+atac.obj.HSC <- subset(atac.obj, subset = cluster_celltype == "HSC")
+VlnPlot(atac.obj.HSC, features = "DDIT4", assay = "RNA_ArchR", split.by = "Genotype", group.by = "Sample", cols = c("blue", "red", "grey80"))
+
+
+enrichr.outs.1 <- run_enrichr_for_list(de.results %>% filter(avg_log2FC > 0 & pval < 0.05) %>% pull(feature))
+enrichr.outs.2 <- run_enrichr_for_list(de.results %>% filter(avg_log2FC < 0 & pval < 0.05) %>% pull(feature))
+
+print("Up in MUT:")
+enrichr.outs.1 %>% select(GeneRatio, BgRatio, pvalue, p.adjust, Count) %>% filter(pvalue < 0.05) %>% print
+print("Up in WT:")
+enrichr.outs.2 %>% select(GeneRatio, BgRatio, pvalue, p.adjust, Count) %>% filter(pvalue < 0.05) %>% print
 
 
 ############################################### HSC - TF motif volcano plots ##########################################
 
+## This is the file currently used in the manuscript: HSC_chromvar_analysis_with_lmm_20231205.csv
 da.motifs <- read_csv("data/chromVAR/JASPAR2020/HSC_chromvar_analysis_with_lmm_20231205.csv")
+
+## This is a line for "experimental" files
+da.motifs.new <- read_csv("data/chromVAR/JASPAR2020/HSC_chromvar_analysis_with_lmm_chromvar_celltype_20240411.csv")
+
+plot_volcano(da.motifs, effect_column = "delta", stat_column = "fdr", stat_line = 0.05, effect_line = 0.1)
 
 ## Subtitle is based on filtering for metadata column below
 p.motifs <- plot_volcano(da.motifs, metadata.df = atac.obj@meta.data %>% dplyr::filter(cluster_celltype == "HSC") %>% dplyr::filter(orig.ident %in% c("SG_VX16_ATAC", "VEX_BM10_POS_ATAC", "VEX_BM8_POS_ATAC", "SG_VX17_ATAC", "SG_VX18_ATAC")),
@@ -562,10 +800,10 @@ p.motifs <- plot_volcano(da.motifs, metadata.df = atac.obj@meta.data %>% dplyr::
              genotyping_column = "genotype_pred_manual") +
              # only_genes = volcano.TF.list, only_genes_colors = volcano.TF.list.colors) + 
   theme(legend.position = "bottom") +
-  coord_cartesian(ylim=c(0, 13), xlim = c(-0.5, 0.5)) +
+  coord_cartesian(ylim=c(0, 6), xlim = c(-0.5, 0.5)) +
   ggtitle("HSC differential TF motifs")
 p.motifs 
-ggsave("figures/current_figure_drafts/ATAC_HSC_diff_tf_motifs_volcano.pdf", plot = p.motifs, device = "pdf", width = 7, height = 7)
+ggsave("figures/current_figure_drafts/ATAC_HSC_diff_tf_motifs_volcano_20240126.pdf", plot = p.motifs, device = "pdf", width = 7, height = 7)
 
 p.motifs <- plot_volcano(da.motifs, metadata.df = atac.obj@meta.data %>% dplyr::filter(cluster_celltype == "HSC") %>% dplyr::filter(orig.ident %in% c("SG_VX16_ATAC", "VEX_BM10_POS_ATAC", "VEX_BM8_POS_ATAC", "SG_VX17_ATAC", "SG_VX18_ATAC")),
                          effect_column = "delta", stat_column = "fdr", effect_line = 0.1, stat_line = 0.05, 
@@ -606,6 +844,15 @@ atac.obj.subset.donor <- subset(atac.obj.subset, CellType == "HSC" & orig.ident 
 # atac.obj.subset.donor$Genotype[is.na(atac.obj.subset.donor$Genotype)] <- "NA"
 # atac.obj.subset.donor$Genotype <- factor(atac.obj.subset.donor$Genotype, levels = c("WT", "MUT", "NA"))
 
+## Formatting the sample and donor columns
+meta.data.mapping <- read_csv("data/formatting_patient_ids/orig_ident_to_study_id_mapping_2024-03-29.csv")
+atac.obj.subset.donor$Sample <- plyr::mapvalues(atac.obj.subset.donor$orig.ident, from = meta.data.mapping$orig.ident, to = meta.data.mapping$updated_name)
+atac.obj.subset.donor$Sample <- factor(atac.obj.subset.donor$Sample, levels = meta.data.mapping$updated_name %>% sort())
+atac.obj.subset.donor@meta.data %>% count(orig.ident, Sample)
+atac.obj.subset.donor$Donor <- gsub("_BMMC|_CD34.*", "", atac.obj.subset.donor$Sample) %>% gsub("_[A|B]", "", .)
+atac.obj.subset.donor$Donor <- factor(atac.obj.subset.donor$Donor, levels = unique(atac.obj.subset.donor$Donor) %>% sort())
+atac.obj.subset.donor@meta.data %>% count(orig.ident, Sample, Donor)
+
 da.motifs <- read_csv("data/chromVAR/JASPAR2020/HSC_chromvar_analysis_with_lmm_20231205.csv")
 tf.list <- c(da.motifs %>% dplyr::filter(delta > 0) %>% slice_min(pval, n = 10) %>% pull(feature), da.motifs %>% dplyr::filter(delta < 0) %>% slice_min(pval, n = 10) %>% pull(feature))
 
@@ -622,19 +869,30 @@ tf.motifs.per.sample <- do.call(rbind, tf.data.frames)
 tf.matrix <- tf.motifs.per.sample %>% pivot_wider(names_from = sample, values_from = mean_chromvar_score) %>% column_to_rownames("TF")
 
 dev.off()
-pdf(file = "figures/current_figure_drafts/TF_motif_heatmap.pdf", width = 4, height = 4)
+pdf(file = "figures/current_figure_drafts/TF_motif_heatmap_20240328.pdf", width = 4, height = 4)
 pheatmap::pheatmap(tf.matrix, color=colorRampPalette(c("navy", "white", "red"))(50),  
                    cluster_cols = F,
                    breaks = seq(-1, 1, length.out = 50), main = "Delta z-score for\nmotif accessibility")
 dev.off()
 
+## Plot number of cells genotyped for each donor
+atac.obj.subset.donor@meta.data%>% 
+  filter(Genotype %in% c("MUT", "WT")) %>% 
+  filter(CellType == "HSC") %>% 
+  count(Donor) %>% ggplot(aes(x = Donor, y = log10(n))) +
+  geom_col(color = "black", fill = "grey40") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  ylab("Cells Genotyped\n(log10)") +
+  xlab("Patient sample")
+ggsave(paste0("figures/current_figure_drafts/HSC_TF_motif_donor_genotyping_bar_plot.pdf"), dpi = 300, device = "pdf", height = 1.5, width = 2.25)
+
 ######################################### TF motif chromvar score boxplots ###################################
 
 atac.obj.subset <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_HSC_chromvar_20231205.rds")
-atac.obj.subset.donor <- subset(atac.obj.subset, CellType == "HSC" & orig.ident %in% c("SG_VX16_ATAC", "SG_VX17_ATAC"))
+atac.obj.subset.donor <- subset(atac.obj.subset, CellType %in% c("HSC") & orig.ident %in% c("SG_VX16_ATAC", "SG_VX17_ATAC"))
 
 ## rename stat1::stat2
-rownames(atac.obj.subset.donor@assays$chromvar_HSC@data) <- gsub("::", "_", rownames(atac.obj.subset.donor@assays$chromvar_HSC@data))
+rownames(atac.obj.subset.donor@assays$chromvar_celltype@data) <- gsub("::", "_", rownames(atac.obj.subset.donor@assays$chromvar_celltype@data))
 
 tf.data.frame <- atac.obj.subset.donor@assays$chromvar_HSC@data %>% as.matrix() %>% t()
 tf.data.frame <- merge(tf.data.frame, atac.obj.subset.donor@meta.data, by = "row.names")
@@ -658,15 +916,16 @@ plot_TF_motif_boxplot <- function(x) {
   p1 <- tf.data.frame %>% 
     filter(Genotype %in% c("MUT", "WT")) %>% 
     mutate(genotype_category = paste0(Sample, "_", Genotype)) %>% 
-    ggplot(aes_string(x = "Genotype", y = x, fill = "genotype_category")) +
+    ggplot(aes_string(x = "Genotype", y = x, fill = "Genotype")) +
     geom_boxplot(outlier.shape = NA) +
     theme(legend.position = "none") +
     ggtitle(x) +
-    scale_fill_manual(values = c("PT16_WT" = "#B7B6E3", "PT16_MUT" = "#66539E", "PT17_WT" = "#A6C9E0", "PT17_MUT" = "#3A71B1")) +
+    # scale_fill_manual(values = c("PT16_WT" = "#B7B6E3", "PT16_MUT" = "#66539E", "PT17_WT" = "#A6C9E0", "PT17_MUT" = "#3A71B1")) +
+    scale_fill_manual(values = vexas.genotyping.palette) +
     # scale_y_continuous(expand = c(0.2, 0)) +
     # coord_cartesian(ylim=c(-5, 5)) +
     scale_y_continuous(expand = c(0.2, 0), limits = c(min.quantile, max.quantile)) +
-    stat_compare_means(label = "p.format", label.y = Inf, vjust = 1.5, mapping = aes(fill = Genotype)) +
+    stat_compare_means(label = "p.format", label.y = Inf, vjust = 1.5) +
     ylab(paste0("Motif accessibility\n(z-score)")) +
     xlab("")
   return(p1)
@@ -738,11 +997,43 @@ lapply(c("SG_VX17_ATAC", "SG_VX18_ATAC", "VEX_BM10_POS_ATAC"), function(x) {
     write_csv(file = paste0("/gpfs/commons/groups/landau_lab/VEXAS/checking_mutation_rates/barcode_lists/", x, "_WT.txt"), col_names = F)
 })
 
+##################################### Comparing old vs. new genotyping protocol ########################
+
+## Print averages
+md %>% 
+  group_by(Sample) %>% 
+  summarize(genotyping_rate = sum(Genotype %in% c("MUT", "WT")) / n()) %>% 
+  mutate(Protocol = if_else(Sample %in% c("PT16", "PT17", "PT18"), "Updated", "Original")) %>% 
+  group_by(Protocol) %>% 
+  summarize(mean = mean(genotyping_rate))
+
+## Bar plot
+md %>% 
+  group_by(Sample) %>% 
+  summarize(genotyping_rate = sum(Genotype %in% c("MUT", "WT")) / n()) %>% 
+  mutate(Protocol = if_else(Sample %in% c("PT16", "PT17", "PT18"), "Updated", "Original")) %>% 
+  group_by(Protocol) %>% 
+  mutate(average_val = mean(genotyping_rate)) %>% 
+  ggplot(aes(x = Sample, y = genotyping_rate, fill = Protocol, label = average_val)) +
+  geom_col(color = "black") +
+  scale_fill_manual(values = c("grey80", "goldenrod2")) +
+  theme(legend.position = "none") +
+  xlab(element_blank()) +
+  scale_y_continuous(labels = scales::percent) +
+  ylab("Genotyping rate") +
+  ggtitle("GoTChA Genotyping Protocol", subtitle = "Mean genotyping rates, original protocol: 8.33%,\nupdated protocol: 17.0%") +
+  geom_hline(color = "black", aes(yintercept = average_val), linetype = "longdash") +
+  # annotate("text", x = 0, y = 0.25) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  facet_grid(cols = vars(Protocol), drop = TRUE, scales = "free_x", space = "free")
+  # geom_hline(color = "goldenrod2", yintercept = 0.170)
+
+ggsave("figures/current_figure_drafts/GoTChA_genotyping_protocols_20240328.pdf", device = "pdf", width = 4.5, height = 3.5)
 
 ###################################### Phospho-seq plots ################################################
 
 ## Normalize within cells
-sample.plot = "PT17"
+sample.plot = "PT16"
 total.tsb.counts <- atac.obj@assays$ADT_TSB@counts %>% colSums()
 atac.obj <- AddMetaData(atac.obj, total.tsb.counts, col.name = "total_tsb_counts")
 bcs.keep <- atac.obj@meta.data %>% 
@@ -763,7 +1054,7 @@ tag.list <- rownames(atac.obj.sub@assays$ADT_TSB@data)
 p.rank <- atac.obj.sub@meta.data %>% 
   filter(!is.na(IgG1)) %>% 
   filter(Genotype %in% c("MUT", "WT")) %>% 
-  # filter(cluster_celltype == "HSC") %>% 
+  filter(cluster_celltype == "HSC") %>%
   group_by(Genotype) %>% 
   summarize(across(tag.list, mean)) %>% 
   pivot_longer(cols = tag.list, names_to = "TSB", values_to = "expression") %>% 
@@ -772,17 +1063,35 @@ p.rank <- atac.obj.sub@meta.data %>%
   arrange(-diff) %>% 
   mutate(rank = row_number()) %>%
   mutate(direction = ifelse(diff > 0, "Up in MUT", "Up in WT")) %>% 
-  mutate(direction = ifelse(rank > 20, "NA", direction)) %>% 
-  mutate(label = ifelse(direction != "NA", TSB, NA_character_)) %>% 
-  ggplot(aes(x = reorder(TSB, rank), y = diff, label = label)) +
-  geom_point(size = 3) +
-  theme(axis.text.x = element_blank()) +
+  mutate(direction = ifelse(rank > 10 & rank < 40, "NA", direction)) %>% 
+  mutate(label = ifelse(direction != "NA" | TSB == "CHOP" | TSB == "ATF4", TSB, NA_character_)) %>%
+  ggplot(aes(x = reorder(TSB, rank), y = diff, label = label, color = direction)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c(`Up in MUT` = vexas.genotyping.palette[["MUT"]], `Up in WT` = vexas.genotyping.palette[["WT"]])) +
+  # theme(axis.text.x = element_blank()) +
+  # scale_x_discrete(breaks = c(1, 10, 20, 30, 40, 50)) +
   xlab("Rank") + ylab("Average(MUT) - Average(WT)") + 
-  ggtitle(paste0(sample.plot, ", TSB expression"), subtitle = "HSC, EMP, LMPP, MkP clusters")
-ggsave(paste0("figures/current_figure_drafts/ATAC_HSC_EMP_LMPP_MkP_", sample.plot, "_phospho_seq_rank_plot_no_labels_up_MUT_only.pdf"), plot = p.rank, dpi = 300, device = "pdf", width = 7, height = 5)
-p.rank <- p.rank + geom_text_repel(max.overlaps = 25)
+  ggtitle(paste0(sample.plot, ", TSB expression"), subtitle = "HSC clusters") + 
+  geom_hline(yintercept = 0, linetype = "longdash")
+ggsave(paste0("figures/current_figure_drafts/ATAC_HSC_", sample.plot, "_phospho_seq_rank_plot_no_labels_20240409.pdf"), plot = p.rank, dpi = 300, device = "pdf", width = 7, height = 5)
+p.rank <- p.rank + geom_text_repel(max.overlaps = 25, point.padding = 0.5, box.padding = 0.5)
 p.rank
-ggsave(paste0("figures/current_figure_drafts/ATAC_HSC_EMP_LMPP_MkP_", sample.plot, "_phospho_seq_rank_plot_up_MUT_only.pdf"), plot = p.rank, dpi = 300, device = "pdf", width = 7, height = 5)
+ggsave(paste0("figures/current_figure_drafts/ATAC_HSC_", sample.plot, "_phospho_seq_rank_plot_20240409.pdf"), plot = p.rank, dpi = 300, device = "pdf", width = 7, height = 5)
+# ggsave(paste0("figures/current_figure_drafts/ATAC_HSC_EMP_LMPP_MkP_", sample.plot, "_phospho_seq_rank_plot_20240326.pdf"), plot = p.rank, dpi = 300, device = "pdf", width = 7, height = 5)
+
+## Save the rank plot metrics to a table for the supplementary
+atac.obj.sub@meta.data %>% 
+  filter(!is.na(IgG1)) %>% 
+  filter(Genotype %in% c("MUT", "WT")) %>% 
+  # filter(cluster_celltype == "HSC") %>%
+  group_by(Genotype) %>% 
+  summarize(across(tag.list, mean)) %>% 
+  pivot_longer(cols = tag.list, names_to = "TSB", values_to = "expression") %>% 
+  pivot_wider(names_from = "Genotype", values_from = "expression") %>% 
+  mutate(diff = MUT - WT, abs_diff = abs(MUT - WT)) %>% 
+  arrange(-diff) %>% 
+  mutate(rank = row_number()) %>% 
+  write_csv(file = paste0("data/phospho_seq/ATAC_HSC_", sample.plot, "_phospho_seq_rank_plot_metrics_20240409.csv"))
 
 ## Making boxplots of all tags
 making_boxplot_for_adt <-  function(x) {
@@ -822,8 +1131,132 @@ p.combined <- wrap_plots(plist, nrow = 5)
 p.combined
 ggsave("figures/current_figure_drafts/ATAC_HSC_EMP_LMPP_MkP_BM17_phospho_seq_boxplots.pdf", plot = p.combined, dpi = 300, device = "pdf", width = 15, height = 10)
 
+## Making heatmaps by tag
+target.tags <- c("CEBPA", "ATF4", "CHOP", "MCL1", "SPI-B")
+m.phospho <- atac.obj.sub@meta.data %>% 
+  select(Donor, CellType, Genotype, all_of(tag.list)) %>% 
+  rownames_to_column("Barcode") %>% 
+  pivot_longer(cols = all_of(tag.list), names_to = "tag", values_to = "value") %>% 
+  group_by(Donor, CellType, tag, Genotype) %>% 
+  summarize(average_expression = mean(value)) %>% 
+  pivot_wider(names_from = Genotype, values_from = average_expression) %>% 
+  mutate(difference_average_expression = MUT - WT) %>%
+  ungroup() %>% 
+  select(CellType, tag, difference_average_expression) %>%
+  filter(tag %in% target.tags) %>% 
+  pivot_wider(names_from = tag, values_from = difference_average_expression) %>% 
+  column_to_rownames("CellType") %>% 
+  # column_to_rownames("Donor") %>% 
+  t()
 
-############# Checking cell type assignments with ADT ################
+atac.obj.sub@meta.data %>% 
+  filter(CellType == "HSC" & Genotype %in% c("MUT", "WT")) %>% 
+  ggplot(aes(x = Genotype, y = ATF4)) +
+  geom_boxplot() +
+  geom_point() + stat_compare_means()
+
+atac.obj.sub@meta.data %>% 
+  filter(CellType == "HSC" & Genotype %in% c("MUT", "WT")) %>% 
+  group_by(Genotype) %>% 
+  summarize(mean = mean(ATF4))
+
+pdf(paste0("figures/current_figure_drafts/per_patient_phosphoseq_tags_", sample.plot, "_no_scaling.pdf"), width = 4, height = 3)
+pheatmap(m.phospho, cellheight=10, cellwidth = 10, 
+         scale = "none", 
+         cluster_rows = F, cluster_cols = F, 
+         main = sample.plot,
+         color=colorRampPalette(c("navy", "white", "red"))(50),  breaks = seq(-0.1, 0.1, length.out = 50))
+dev.off()
+
+m.phospho.all <- atac.obj.sub@meta.data %>% 
+  select(Donor, CellType, Genotype, all_of(tag.list)) %>% 
+  rownames_to_column("Barcode") %>% 
+  pivot_longer(cols = all_of(tag.list), names_to = "tag", values_to = "value") %>% 
+  group_by(Donor, CellType, tag, Genotype) %>% 
+  summarize(average_expression = mean(value)) %>% 
+  pivot_wider(names_from = Genotype, values_from = average_expression) %>% 
+  mutate(difference_average_expression = MUT - WT) %>%
+  ungroup() %>% 
+  select(CellType, tag, difference_average_expression) %>%
+  pivot_wider(names_from = tag, values_from = difference_average_expression) %>% 
+  column_to_rownames("CellType") %>% 
+  # column_to_rownames("Donor") %>% 
+  t()
+
+pdf(paste0("figures/current_figure_drafts/per_patient_phosphoseq_tags_", sample.plot, "_no_scaling_all_tags.pdf"), width = 3, height = 10)
+pheatmap(m.phospho.all, cellheight=10, cellwidth = 10, 
+         scale = "none", 
+         cluster_rows = T, cluster_cols = F, 
+         main = sample.plot,
+         color=colorRampPalette(c("navy", "white", "red"))(50),  breaks = seq(-0.2, 0.2, length.out = 50))
+dev.off()
+
+atac.obj.sub@meta.data %>% 
+  select(Donor, CellType, Genotype, all_of(tag.list)) %>% 
+  rownames_to_column("Barcode") %>% 
+  mutate(ATF4_CHOP_ratio = ATF4 / CHOP) %>% 
+  ggplot(aes(x = Genotype, y = ATF4_CHOP_ratio)) +
+  geom_boxplot() +
+  facet_grid(cols = vars(CellType))
+  
+## Correlate chromVAR scores with protein levels
+atac.obj.hsc.chromvar <- readRDS("~/rscripts/VEXAS_ATAC_signac/data/seurat_objects/vexas_ATAC_HSC_chromvar_20231205.rds")
+atf4.chromvar <- atac.obj.hsc.chromvar@assays$chromvar_HSC$data["ATF4", ]
+atac.obj.sub <- AddMetaData(atac.obj.sub, atf4.chromvar, col.name = "ATF4_chromvar")
+
+## Chromvar run with HSCs only
+atac.obj.sub@meta.data %>% 
+  filter(!is.na(IgG1)) %>% 
+  filter(cluster_celltype == "HSC") %>%
+  ggplot(aes(x = ATF4_chromvar, y = ATF4, color = Genotype)) +
+  scale_color_manual(values = vexas.genotyping.palette) +
+  geom_point() +
+  facet_grid(cols = vars(Genotype)) +
+  ggtitle("HSCs", subtitle = "chromvar run with HSCs only") +
+  stat_cor(label.y = 1.5)
+
+## Chromvar run with all cells, HSPCs
+atf4.chromvar <- atac.obj.sub@assays$chromvar_celltype$data["ATF4", ]
+atac.obj.sub$ATF4_chromvar <- NULL
+atac.obj.sub <- AddMetaData(atac.obj.sub, atf4.chromvar, col.name = "ATF4_chromvar")
+atac.obj.sub@meta.data %>% 
+  filter(!is.na(IgG1)) %>% 
+  filter(cluster_celltype %in% c("HSC", "EMP", "LMPP", "MkP")) %>%
+  ggplot(aes(x = ATF4_chromvar, y = ATF4, color = Genotype)) +
+  scale_color_manual(values = vexas.genotyping.palette) +
+  geom_point() +
+  facet_grid(cols = vars(Genotype)) +
+  ggtitle("HSPCs", subtitle = "chromvar run with all cells") +
+  stat_cor(label.y = 1.5)
+
+## Chromvar run with all cells, all cells
+bcs.keep <- atac.obj@meta.data %>% 
+  filter(!is.na(total_tsb_counts)) %>% 
+  filter(Sample == sample.plot) %>% rownames()
+atac.obj.sub <- subset(atac.obj, cells = bcs.keep)
+atac.obj.sub <- NormalizeData(atac.obj.sub, normalization.method = "CLR", margin = 2, assay = "ADT_TSB")
+atac.obj.sub <- AddMetaData(atac.obj.sub, atac.obj.sub@assays$ADT_TSB@data %>% t())
+atf4.chromvar <- atac.obj.sub@assays$chromvar_celltype$data["ATF4", ]
+atac.obj.sub$ATF4_chromvar <- NULL
+atac.obj.sub <- AddMetaData(atac.obj.sub, atf4.chromvar, col.name = "ATF4_chromvar")
+atac.obj.sub@meta.data %>% 
+  filter(!is.na(IgG1)) %>% 
+  ggplot(aes(x = ATF4_chromvar, y = ATF4)) +
+  scale_color_manual(values = vexas.genotyping.palette) +
+  geom_point(alpha = 0.1) +
+  # facet_grid(cols = vars(Genotype)) +
+  ggtitle("All cells", subtitle = "chromvar run with all cells") +
+  stat_cor(label.y = 1.8)
+  
+  
+atac.obj@meta.data$Donor %>% table()
+
+
+atac.obj.sub <- subset(atac.obj, Donor %in% c("PT16","PT17", "PT18"))
+Idents(atac.obj) <- "Donor"
+CoveragePlot(atac.obj, region = "chrY-2786855-2787682", assay = "ATAC")
+
+ ############# Checking cell type assignments with ADT ################
 
 to.plot.tags <- c("Isotype-RTK2071", "Isotype-RTK2758", "Isotype-RTK4174",  "Isotype-G0114F7", "Isotype-HTK888", 
                   "Hu.CD19", "Hu.CD3-UCHT1", "Hu.CD4-RPA.T4", "Hu.CD8", "Hu.CD14-M5E2",  "Hu.CD16", "Hu.CD56",
@@ -894,6 +1327,47 @@ ggsave("figures/vexas_genotyping_umaps_2_02_23.pdf", plot = p.combined, width = 
 # 
 # p.combined <- p.celltypes + p.genotyping + p.genotype.rates + plot_spacer() + plot_spacer() + p.uba1.expression + plot_layout(ncol = 3, nrow = 2, widths = c(1.5, 1.5, 1), heights = c(2, 1))
 
+#################### Looking at TF motifs across progenitors #####################
+
+atac.obj@meta.data %>% 
+  filter(cluster_celltype %in% c("HSC", "EMP", "LMPP", "MkP", "CLP")) %>% 
+  mutate(CellType = factor(CellType, levels = c("HSC", "EMP", "LMPP", "MkP", "CLP"))) %>% 
+  filter(Genotype %in% c("MUT", "WT")) %>% 
+  count(CellType, Genotype) %>% 
+  pivot_wider(names_from = Genotype, values_from = n)
+
+atac.obj@assays$chromvar_celltype %>% rownames() %>% grep("ATF", ., value = T)
+
+tf.data.frame <- atac.obj@assays$chromvar_celltype@data %>% as.matrix() %>% t()
+tf.data.frame <- merge(tf.data.frame, atac.obj@meta.data, by = "row.names")
+
+tf.data.frame %>% 
+  filter(cluster_celltype %in% c("HSC", "EMP", "LMPP", "MkP", "CLP")) %>% 
+  mutate(CellType = factor(CellType, levels = c("HSC", "EMP", "LMPP", "MkP", "CLP"))) %>% 
+  filter(Genotype == "MUT") %>% 
+  ggplot(aes(x = CellType, y = ATF4)) +
+  geom_boxplot() +
+  stat_compare_means(comparisons = list(c("HSC", "CLP"))) + ggtitle("MUT cells only")
 
 
+###################### Updating sample labels ########################
+
+df.2 <- read_csv("data/formatting_patient_ids/patient_id_mappings_2024-03-28.csv")
+
+orig.ident.to.label.mapping <- df.2$`Study ID`
+names(orig.ident.to.label.mapping) <- df.2$`Patient ID`
+head(orig.ident.to.label.mapping)
+
+## Do an initial replace of the sample IDs
+df.1 <- data.frame(orig.ident = atac.obj@meta.data$orig.ident %>% unique %>% sort())
+df.1$updated_name <- df.1$orig.ident
+for (sample in names(orig.ident.to.label.mapping)) {
+  df.1 <- df.1 %>% mutate(updated_name = gsub("VX", "BM", updated_name) %>% str_replace_all(., paste0(sample, "[a|b]*_"), paste0(orig.ident.to.label.mapping[[sample]], "_")))
+}
+
+## Save the list
+df.1 %>% 
+  mutate(updated_name = gsub("SG_|VEX_", "", updated_name)) %>% 
+  mutate(updated_name = gsub("_[A-Za-z].*", "", updated_name)) %>% 
+  write_csv("data/formatting_patient_ids/orig_ident_to_study_id_mapping_2024-03-28.csv")
 
