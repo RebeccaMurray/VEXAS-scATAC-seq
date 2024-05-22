@@ -1,7 +1,6 @@
 logs/
 data/
 output/
-scripts/
 figures/
 backups/
 *.pdf
